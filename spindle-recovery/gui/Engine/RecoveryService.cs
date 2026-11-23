@@ -30,6 +30,12 @@ namespace SpindleRecovery.Engine
         public string VaultDir;                    // where PhotoRec writes reconstructed files
     }
 
+    public sealed class RecoverResult
+    {
+        public readonly int Ok, Failed;
+        public RecoverResult(int ok, int failed) { Ok = ok; Failed = failed; }
+    }
+
     /// <summary>High-level operations built on the TestDisk / PhotoRec engines.</summary>
     public static class RecoveryService
     {
@@ -84,8 +90,9 @@ namespace SpindleRecovery.Engine
         /// Lists every file (existing and deleted) that the file system still references.
         /// Nothing is written to the source device.
         /// </summary>
-        public static async Task<List<FoundFile>> QuickScanAsync(PartitionInfo part, CancellationToken token)
+        public static async Task<List<FoundFile>> QuickScanAsync(PartitionInfo part, CancellationToken token, Action<double> progress = null)
         {
+            if (part.IsNtfs) return await NtfsQuickScanAsync(part, token, progress);
             var dir = EngineHost.NewSessionDir("quick");
             var cmd = (part.Number > 0 ? "advanced," + part.Number : "advanced") + ",list,recursive,fullpathname";
             await EngineHost.RunAsync(EngineHost.TestDiskPath, new[] { "/log", "/cmd", part.Disk.Path, cmd }, dir, null, token);
@@ -94,10 +101,47 @@ namespace SpindleRecovery.Engine
             return TestDiskParser.ParseFileListing(log, part);
         }
 
+        static long PartitionOffset(PartitionInfo part) => part.StartSector * (part.Disk.SectorSize > 0 ? part.Disk.SectorSize : 512);
+
+        /// <summary>Reads the NTFS Master File Table directly (read-only) and lists live and deleted files.</summary>
+        static Task<List<FoundFile>> NtfsQuickScanAsync(PartitionInfo part, CancellationToken token, Action<double> progress)
+        {
+            return Task.Run(() =>
+            {
+                using (var dev = new SectorReader(part.Disk.Path, part.Disk.SectorSize))
+                {
+                    var vol = NtfsVolume.Open(dev, PartitionOffset(part));
+                    var entries = vol.Scan(progress, token);
+                    var files = new List<FoundFile>(entries.Count);
+                    foreach (var e in entries)
+                    {
+                        var slash = e.Path.LastIndexOf('/');
+                        files.Add(new FoundFile
+                        {
+                            Name = e.Name,
+                            Folder = slash > 0 ? e.Path.Substring(0, slash) : "/",
+                            FullPath = e.Path,
+                            Size = e.Size,
+                            Modified = e.Modified,
+                            Deleted = !e.InUse,
+                            Source = FoundSource.QuickScan,
+                            Category = FileTypes.Categorize(e.Name),
+                            Extension = Path.GetExtension(e.Name).TrimStart('.').ToLowerInvariant(),
+                            Partition = part,
+                            Chance = e.Chance,
+                            Ntfs = e,
+                        });
+                    }
+                    return files;
+                }
+            }, token);
+        }
+
         /// <summary>Copies the selected quick-scan files (original names and folders) to <paramref name="destination"/>.</summary>
-        public static async Task<(int ok, int failed)> RecoverQuickFilesAsync(PartitionInfo part, IEnumerable<FoundFile> files, string destination, CancellationToken token)
+        public static async Task<RecoverResult> RecoverQuickFilesAsync(PartitionInfo part, IEnumerable<FoundFile> files, string destination, CancellationToken token)
         {
             Directory.CreateDirectory(destination);
+            if (part.IsNtfs) return await Task.Run(() => RecoverNtfs(part, files.ToList(), destination, token), token);
             var dir = EngineHost.NewSessionDir("undelete");
             var listFile = Path.Combine(dir, "selection.txt");
             File.WriteAllText(listFile, string.Join("\n", files.Select(f => f.FullPath)) + "\n", new UTF8Encoding(false));
@@ -115,9 +159,78 @@ namespace SpindleRecovery.Engine
             }
             catch { }
             var m = Regex.Matches(log, @"Copy done! (\d+) ok, (\d+) failed");
-            if (m.Count == 0) return (0, files.Count());
+            if (m.Count == 0) return new RecoverResult(0, files.Count());
             var last = m[m.Count - 1];
-            return (int.Parse(last.Groups[1].Value), int.Parse(last.Groups[2].Value));
+            return new RecoverResult(int.Parse(last.Groups[1].Value), int.Parse(last.Groups[2].Value));
+        }
+
+        static RecoverResult RecoverNtfs(PartitionInfo part, List<FoundFile> files, string destination, CancellationToken token)
+        {
+            int ok = 0, failed = 0;
+            using (var dev = new SectorReader(part.Disk.Path, part.Disk.SectorSize))
+            {
+                var vol = NtfsVolume.Open(dev, PartitionOffset(part));
+                foreach (var f in files)
+                {
+                    token.ThrowIfCancellationRequested();
+                    try
+                    {
+                        var rel = string.Join(Path.DirectorySeparatorChar.ToString(),
+                            f.FullPath.Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries).Select(SafeSegment));
+                        var target = UniquePath(Path.Combine(destination, rel));
+                        Directory.CreateDirectory(Path.GetDirectoryName(target));
+                        using (var fs = new FileStream(target, FileMode.CreateNew, FileAccess.Write))
+                            if (f.Ntfs != null) vol.CopyTo(f.Ntfs, fs, token);
+                        if (f.Modified.HasValue) try { File.SetLastWriteTime(target, f.Modified.Value); } catch { }
+                        ok++;
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch { failed++; }
+                }
+            }
+            return new RecoverResult(ok, failed);
+        }
+
+        /// <summary>Reads the first bytes of a found file for preview, without writing anything anywhere.</summary>
+        public static Task<byte[]> ReadHeadAsync(FoundFile f, int max)
+        {
+            return Task.Run(() =>
+            {
+                if (f.Source == FoundSource.DeepScan)
+                {
+                    using (var fs = new FileStream(f.FullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    {
+                        var buf = new byte[(int)Math.Min(max, fs.Length)];
+                        int got = 0;
+                        while (got < buf.Length) { int n = fs.Read(buf, got, buf.Length - got); if (n <= 0) break; got += n; }
+                        return buf;
+                    }
+                }
+                if (f.Ntfs != null)
+                    using (var dev = new SectorReader(f.Partition.Disk.Path, f.Partition.Disk.SectorSize))
+                        return NtfsVolume.Open(dev, PartitionOffset(f.Partition)).ReadHead(f.Ntfs, max);
+                return null; // FAT quick-scan files are previewed after recovery
+            });
+        }
+
+        static string SafeSegment(string s)
+        {
+            foreach (var c in Path.GetInvalidFileNameChars()) s = s.Replace(c, '_');
+            s = s.TrimEnd('.', ' ');
+            return s.Length == 0 ? "_" : s;
+        }
+
+        static string UniquePath(string path)
+        {
+            if (!File.Exists(path)) return path;
+            var dir = Path.GetDirectoryName(path);
+            var name = Path.GetFileNameWithoutExtension(path);
+            var ext = Path.GetExtension(path);
+            for (int i = 2; ; i++)
+            {
+                var p = Path.Combine(dir, name + " (" + i + ")" + ext);
+                if (!File.Exists(p)) return p;
+            }
         }
 
         // ---------------------------------------------------------------- deep scan

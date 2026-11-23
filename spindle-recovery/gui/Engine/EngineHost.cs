@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
@@ -40,6 +43,11 @@ namespace SpindleRecovery.Engine
         }
 
         static string _engineDir;
+        static bool _usingOverride;
+
+        // Engines embedded in this (signed) executable, and their SHA-256, by file name.
+        static Dictionary<string, byte[]> _embedded;
+        static Dictionary<string, byte[]> _embeddedHash;
 
         /// <summary>Directory that contains testdisk(.exe) and photorec(.exe).</summary>
         public static string EngineDir
@@ -47,10 +55,18 @@ namespace SpindleRecovery.Engine
             get
             {
                 if (_engineDir != null) return _engineDir;
-                // Developer override (also used to drive the native Linux engines when testing under Mono)
-                var overrideDir = Environment.GetEnvironmentVariable("SPINDLE_ENGINE_DIR");
-                if (!string.IsNullOrEmpty(overrideDir) && Directory.Exists(overrideDir))
-                    return _engineDir = overrideDir;
+                // Developer override, used to drive native Linux engines when testing under Mono.
+                // Never honoured on Windows: the app runs elevated, and any user-level program can
+                // set an environment variable, which would let it substitute its own binaries.
+                if (!IsWindows)
+                {
+                    var overrideDir = Environment.GetEnvironmentVariable("SPINDLE_ENGINE_DIR");
+                    if (!string.IsNullOrEmpty(overrideDir) && Directory.Exists(overrideDir))
+                    {
+                        _usingOverride = true;
+                        return _engineDir = overrideDir;
+                    }
+                }
                 _engineDir = ExtractEmbeddedEngines();
                 return _engineDir;
             }
@@ -59,36 +75,135 @@ namespace SpindleRecovery.Engine
         public static string TestDiskPath => Path.Combine(EngineDir, IsWindows ? "testdisk.exe" : "testdisk");
         public static string PhotoRecPath => Path.Combine(EngineDir, IsWindows ? "photorec.exe" : "photorec");
 
-        static string ExtractEmbeddedEngines()
+        static void LoadEmbedded()
         {
+            if (_embedded != null) return;
             var asm = Assembly.GetExecutingAssembly();
-            var names = new[] { "testdisk.exe", "photorec.exe" };
-            var blobs = new Dictionary<string, byte[]>();
+            var blobs = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+            var hashes = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
             using (var sha = SHA256.Create())
-            {
-                var all = new MemoryStream();
-                foreach (var n in names)
-                {
+                foreach (var n in new[] { "testdisk.exe", "photorec.exe" })
                     using (var s = asm.GetManifestResourceStream("engine." + n))
                     {
                         if (s == null) throw new InvalidOperationException("Embedded engine missing: " + n);
                         var ms = new MemoryStream();
                         s.CopyTo(ms);
                         blobs[n] = ms.ToArray();
-                        all.Write(blobs[n], 0, blobs[n].Length);
+                        hashes[n] = sha.ComputeHash(blobs[n]);
                     }
-                }
-                var hash = BitConverter.ToString(sha.ComputeHash(all.ToArray())).Replace("-", "").Substring(0, 16).ToLowerInvariant();
-                var dir = Path.Combine(AppDataDir, "engine", hash);
-                Directory.CreateDirectory(dir);
-                foreach (var kv in blobs)
+            _embeddedHash = hashes;
+            _embedded = blobs;
+        }
+
+        /// <summary>
+        /// Where engines are extracted. On Windows this is under Program Files, which standard
+        /// users cannot write to, so a non-elevated process cannot plant or replace a binary
+        /// that this elevated application will later run.
+        /// </summary>
+        static string EngineRoot
+        {
+            get
+            {
+                if (IsWindows)
                 {
-                    var target = Path.Combine(dir, kv.Key);
-                    if (!File.Exists(target) || new FileInfo(target).Length != kv.Value.Length)
-                        File.WriteAllBytes(target, kv.Value);
+                    var pf = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+                    if (!string.IsNullOrEmpty(pf)) return Path.Combine(pf, "Spindle Recovery");
                 }
-                return dir;
+                return AppDataDir;
             }
+        }
+
+        static string ExtractEmbeddedEngines()
+        {
+            LoadEmbedded();
+            var all = new List<byte>();
+            foreach (var h in _embeddedHash.OrderBy(k => k.Key, StringComparer.Ordinal)) all.AddRange(h.Value);
+            string id;
+            using (var sha = SHA256.Create())
+                id = BitConverter.ToString(sha.ComputeHash(all.ToArray())).Replace("-", "").Substring(0, 16).ToLowerInvariant();
+            var root = EngineRoot;
+            Directory.CreateDirectory(root);
+            if (IsWindows) SecureDirectory(root);
+            var dir = Path.Combine(root, "engine", id);
+            Directory.CreateDirectory(dir);
+            foreach (var kv in _embedded)
+            {
+                var target = Path.Combine(dir, kv.Key);
+                if (!FileMatches(target, _embeddedHash[kv.Key])) WriteEngine(target, kv.Value);
+            }
+            return dir;
+        }
+
+        /// <summary>Administrators and SYSTEM: full control. Users: read and execute. No inherited entries.</summary>
+        static void SecureDirectory(string dir)
+        {
+            try
+            {
+                var admins = new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null);
+                var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
+                var users = new SecurityIdentifier(WellKnownSidType.BuiltinUsersSid, null);
+                var inherit = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
+                var sec = new DirectorySecurity();
+                sec.SetAccessRuleProtection(true, false);
+                sec.SetOwner(admins);
+                sec.AddAccessRule(new FileSystemAccessRule(admins, FileSystemRights.FullControl, inherit, PropagationFlags.None, AccessControlType.Allow));
+                sec.AddAccessRule(new FileSystemAccessRule(system, FileSystemRights.FullControl, inherit, PropagationFlags.None, AccessControlType.Allow));
+                sec.AddAccessRule(new FileSystemAccessRule(users, FileSystemRights.ReadAndExecute, inherit, PropagationFlags.None, AccessControlType.Allow));
+                Directory.SetAccessControl(dir, sec);
+            }
+            catch
+            {
+                // Program Files is already admin-only; the hash check in LockVerifiedEngine is the
+                // final safeguard, so a failure to tighten the ACL further is not fatal.
+            }
+        }
+
+        static bool FileMatches(string path, byte[] expected)
+        {
+            try
+            {
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                using (var sha = SHA256.Create())
+                    return sha.ComputeHash(fs).SequenceEqual(expected);
+            }
+            catch { return false; }
+        }
+
+        static void WriteEngine(string target, byte[] bytes)
+        {
+            var tmp = target + ".tmp";
+            File.WriteAllBytes(tmp, bytes);
+            if (File.Exists(target)) File.Delete(target);
+            File.Move(tmp, target);
+        }
+
+        /// <summary>
+        /// Verifies an engine against the copy embedded in this executable and returns an open
+        /// handle that denies writing, renaming and deleting the file. Keep it open until the
+        /// engine has started, so the verified file is the one that runs. Returns null for
+        /// engines that are not embedded (developer override on Linux).
+        /// </summary>
+        public static IDisposable LockVerifiedEngine(string exePath)
+        {
+            if (_usingOverride) return null; // developer override (Linux/Mono only)
+            LoadEmbedded();
+            var name = Path.GetFileName(exePath);
+            if (!_embeddedHash.TryGetValue(name, out var expected)) return null;
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                FileStream fs = null;
+                try
+                {
+                    fs = new FileStream(exePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+                    using (var sha = SHA256.Create())
+                        if (sha.ComputeHash(fs).SequenceEqual(expected)) return fs;
+                }
+                catch (FileNotFoundException) { }
+                catch (DirectoryNotFoundException) { Directory.CreateDirectory(Path.GetDirectoryName(exePath)); }
+                fs?.Dispose();
+                WriteEngine(exePath, _embedded[name]); // missing or modified: restore the genuine copy
+            }
+            throw new System.Security.SecurityException("The recovery engine " + name + " failed its integrity check and could not be restored.");
         }
 
         /// <summary>Creates a fresh, time-stamped working folder for an engine run (holds its log).</summary>
@@ -127,6 +242,7 @@ namespace SpindleRecovery.Engine
                 if (env != null)
                     foreach (var kv in env) psi.EnvironmentVariables[kv.Key] = kv.Value;
 
+                using (LockVerifiedEngine(exe))
                 using (var p = new Process { StartInfo = psi })
                 {
                     p.OutputDataReceived += (s, e) => { if (e.Data != null) onLine?.Invoke(e.Data); };

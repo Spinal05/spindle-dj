@@ -3,7 +3,10 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Threading;
 using SpindleRecovery.Engine;
 
 static class ParserTests
@@ -57,7 +60,8 @@ static class ParserTests
         Check(disks[0].Path == @"\\.\PhysicalDrive0" && disks[0].Model == "Samsung SSD 970 EVO Plus 500GB", "path and model (S/N stripped)");
         Check(disks[0].Partitions.Count == 3, "three GPT partitions");
         Check(disks[0].Partitions[1].Type == "MS Data" && disks[0].Partitions[1].StartSector == 239616, "LBA units parsed");
-        Check(disks[0].Partitions[1].FileSystem == "NTFS" && !disks[0].Partitions[1].SupportsQuickScan, "NTFS uses Deep Scan");
+        Check(disks[0].Partitions[1].FileSystem == "NTFS" && disks[0].Partitions[1].IsNtfs && disks[0].Partitions[1].SupportsQuickScan, "NTFS uses the built-in MFT reader for Quick Scan");
+        Check(!disks[0].Partitions[0].SupportsQuickScan, "EFI partition without a detected file system: Deep Scan only");
         Check(disks[1].Partitions[0].Status == '*' && disks[1].Partitions[0].Label == "USB DRIVE", "bootable FAT32 on USB");
         Check(disks[2].Kind == DeviceKind.Volume && disks[2].Path == @"\\.\E:" && disks[2].ReadOnly, "drive letter volume, read-only flag");
 
@@ -99,8 +103,101 @@ static class ParserTests
               == @"/d ""C:\My Files\recup_dir"" /cmd \\.\PhysicalDrive1 search", "paths with spaces quoted, device path untouched");
         Check(EngineHost.JoinArgs(new[] { @"C:\dir with space\" }) == @"""C:\dir with space\\""", "trailing backslash doubled inside quotes");
 
+        NtfsTests();
+        ScanStoreTests();
+
         Console.WriteLine();
         Console.WriteLine($"{passes} passed, {failures} failed");
         return failures == 0 ? 0 : 1;
+    }
+
+    static string Md5(byte[] b) { using (var m = MD5.Create()) return BitConverter.ToString(m.ComputeHash(b)).Replace("-", "").ToLowerInvariant(); }
+
+    static string ExtractNtfsImage()
+    {
+        var img = Path.Combine(Path.GetTempPath(), "spindle-ntfs-" + Guid.NewGuid().ToString("N") + ".img");
+        using (var gz = new GZipStream(File.OpenRead(Path.Combine(Fixtures, "ntfs-small.img.gz")), CompressionMode.Decompress))
+        using (var o = File.Create(img)) gz.CopyTo(o);
+        return img;
+    }
+
+    // ntfs-small.img: NTFS volume (no partition table) where ntfs-3g deleted the folder /Photos/Trip
+    // (2 pictures), a PDF with a non-ASCII name, a resident 14-byte note and a 2-fragment file.
+    static void NtfsTests()
+    {
+        Console.WriteLine("NTFS Master File Table reader");
+        var img = ExtractNtfsImage();
+        try
+        {
+            using (var dev = new SectorReader(img))
+            {
+                var vol = NtfsVolume.Open(dev, 0);
+                Check(vol.ClusterSize == 1024 && vol.RecordSize == 1024, "boot sector geometry");
+                var all = vol.Scan(null, CancellationToken.None);
+                var deleted = all.Where(e => !e.InUse).ToList();
+                Check(all.Any(e => e.InUse && e.Path == "/Docs/keep.txt"), "existing file listed");
+                Check(!all.Any(e => e.Path.StartsWith("/$")), "NTFS metadata files hidden");
+                var expected = new Dictionary<string, string>
+                {
+                    ["/Photos/Trip/IMG_0042.JPG"] = "a9709e615ccda0ad8329718658dfa3a8",
+                    ["/Photos/Trip/beach.png"] = "e0cff21e93055dc137bb9b89bd112de0",
+                    ["/Docs/Facture \u00e9t\u00e9.pdf"] = "05ae992df52ea0b8f5c31c0b30aa69d7",
+                    ["/Docs/note.txt"] = "04c3f7e3c46477b77fae6e4e17b8fa9a",
+                    ["/Docs/frag.dat"] = "e9943b589559b8aea02adaa8ac55c3f3",
+                };
+                foreach (var kv in expected)
+                {
+                    var e = deleted.FirstOrDefault(x => x.Path == kv.Key);
+                    if (e == null) { Check(false, "deleted file found: " + kv.Key); continue; }
+                    var ms = new MemoryStream();
+                    vol.CopyTo(e, ms, CancellationToken.None);
+                    Check(Md5(ms.ToArray()) == kv.Value, "recovered byte-for-byte: " + kv.Key + (e.Runs == null ? " (resident)" : $" ({e.Runs.Count} run(s))"));
+                }
+                Check(deleted.Single(x => x.Path == "/Docs/frag.dat").Runs.Count >= 2, "fragmented file has several runs");
+                Check(deleted.Where(x => x.Path.StartsWith("/Photos/")).All(x => x.Chance == RecoveryChance.Good), "recovery chance: good (space not reused)");
+                var head = vol.ReadHead(deleted.Single(x => x.Path.EndsWith("IMG_0042.JPG")), 3);
+                Check(head.Length == 3 && head[0] == 0xFF && head[1] == 0xD8 && head[2] == 0xFF, "preview reads the JPEG header");
+            }
+        }
+        finally { File.Delete(img); }
+    }
+
+    static void ScanStoreTests()
+    {
+        Console.WriteLine("Saved scans (save, list, reload)");
+        var home = Path.Combine(Path.GetTempPath(), "spindle-store-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("XDG_DATA_HOME", home); // where Mono puts LocalApplicationData
+        var img = ExtractNtfsImage();
+        try
+        {
+            var disk = new DiskInfo { Path = img, Title = "test.img", Kind = DeviceKind.Image, SectorSize = 512 };
+            var part = new PartitionInfo { Disk = disk, Number = 0, Status = 'P', Type = "NTFS", FileSystemInfo = "NTFS", Label = "TESTVOL", SizeSectors = 12288 };
+            disk.Partitions.Add(part);
+            List<FoundFile> files;
+            using (var dev = new SectorReader(img))
+                files = NtfsVolume.Open(dev, 0).Scan(null, CancellationToken.None).Select(e => new FoundFile
+                {
+                    Name = e.Name, FullPath = e.Path, Folder = Path.GetDirectoryName(e.Path), Size = e.Size, Deleted = !e.InUse,
+                    Source = FoundSource.QuickScan, Partition = part, Ntfs = e, Chance = e.Chance, Modified = e.Modified,
+                }).ToList();
+            var id = ScanStore.Save(disk, part, null, files, false);
+            var meta = ScanStore.List().FirstOrDefault(m => m.Id == id);
+            Check(meta != null && meta.Files == files.Count && meta.Deleted == files.Count(f => f.Deleted), "listed with counts");
+            var r = ScanStore.Load(id);
+            Check(r.files.Count == files.Count && r.scanned != null && r.scanned.Label == "TESTVOL", "reloaded files and partition");
+            var note = r.files.Single(f => f.FullPath == "/Docs/frag.dat");
+            Check(note.Ntfs != null && note.Ntfs.Runs.Count >= 2 && note.Chance == RecoveryChance.Good, "NTFS runs and rating survive the round trip");
+            var dest = Path.Combine(home, "out");
+            var res = RecoveryService.RecoverQuickFilesAsync(r.scanned, r.files.Where(f => f.Deleted), dest, CancellationToken.None).Result;
+            Check(res.Ok == 7 && res.Failed == 0, "recovery from a reloaded scan (" + res.Ok + " ok)");
+            Check(Md5(File.ReadAllBytes(Path.Combine(dest, "Docs", "frag.dat"))) == "e9943b589559b8aea02adaa8ac55c3f3", "reloaded scan recovers byte-for-byte");
+            ScanStore.Delete(id);
+            Check(!ScanStore.List().Any(m => m.Id == id), "deleted");
+        }
+        finally
+        {
+            File.Delete(img);
+            try { Directory.Delete(home, true); } catch { }
+        }
     }
 }

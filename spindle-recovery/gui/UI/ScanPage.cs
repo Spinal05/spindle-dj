@@ -57,6 +57,9 @@ namespace SpindleRecovery.UI
         volatile DeepScanProgress lastProgress;
         DateTime passStart; int passSeen = -1;
         bool deepRunning;
+        volatile bool quickRunning;
+        double quickProgress = -1;
+        int previewToken;
         int quickFound;
 
         public bool IsBusy { get; private set; }
@@ -253,7 +256,7 @@ namespace SpindleRecovery.UI
             AddCol("Type", 80);
             AddCol("Size", 90).DefaultCellStyle.Alignment = DataGridViewContentAlignment.MiddleRight;
             AddCol("Date modified", 120);
-            AddCol("Status", 112);
+            AddCol("Status", 140);
             AddCol("Location", 200);
             foreach (DataGridViewColumn c in grid.Columns) { c.SortMode = DataGridViewColumnSortMode.Programmatic; if (c.Name != "chk") c.ReadOnly = true; }
 
@@ -286,7 +289,7 @@ namespace SpindleRecovery.UI
                 if (e.ColumnIndex == 5 && e.RowIndex >= 0 && e.RowIndex < view.Count)
                 {
                     var f = view[e.RowIndex];
-                    e.CellStyle.ForeColor = f.Source == FoundSource.DeepScan ? Color.FromArgb(124, 58, 237) : f.Deleted ? Theme.Danger : Theme.Success;
+                    e.CellStyle.ForeColor = StatusColor(f);
                     e.CellStyle.SelectionForeColor = e.CellStyle.ForeColor;
                 }
                 if ((e.ColumnIndex == 2 || e.ColumnIndex == 4 || e.ColumnIndex == 6 || e.ColumnIndex == 3) && e.RowIndex >= 0)
@@ -327,9 +330,22 @@ namespace SpindleRecovery.UI
             int avail = grid.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 2;
             int fixedW = 0;
             foreach (DataGridViewColumn c in grid.Columns) if (c.Name != "Name" && c.Name != "Location") fixedW += c.Width;
-            int rest = Math.Max(Theme.S(240), avail - fixedW);
+            int rest = Math.Max(Theme.S(200), avail - fixedW);
             grid.Columns["Name"].Width = rest * 6 / 10;
             grid.Columns["Location"].Width = rest - grid.Columns["Name"].Width;
+        }
+
+        static Color StatusColor(FoundFile f)
+        {
+            if (f.Source == FoundSource.DeepScan) return Color.FromArgb(124, 58, 237);
+            if (!f.Deleted) return Theme.TextMuted;
+            switch (f.Chance)
+            {
+                case RecoveryChance.Good: return Theme.Success;
+                case RecoveryChance.PartlyOverwritten: return Theme.Warning;
+                case RecoveryChance.Overwritten: case RecoveryChance.Unsupported: return Theme.Danger;
+                default: return Theme.Accent;
+            }
         }
 
         DataGridViewTextBoxColumn AddCol(string name, int width, DataGridViewAutoSizeColumnMode mode = DataGridViewAutoSizeColumnMode.None)
@@ -376,6 +392,38 @@ namespace SpindleRecovery.UI
             _ = RunAsync();
         }
 
+        /// <summary>Shows the results of a saved scan without scanning again.</summary>
+        public void LoadSaved(string id)
+        {
+            var r = ScanStore.Load(id);
+            disk = r.disk; part = r.scanned; quickTargets = new List<PartitionInfo>();
+            deep = r.vault != null ? new DeepScanOptions { Disk = r.disk, Partition = r.scanned, VaultDir = r.vault } : null;
+            all.Clear(); vaultSeen.Clear();
+            all.AddRange(r.files);
+            foreach (var f in r.files) if (f.Source == FoundSource.DeepScan) vaultSeen.Add(f.FullPath);
+            categoryFilter = null;
+            foreach (var t in tileMap.Values) { t.Selected = false; t.Invalidate(); }
+            selectAll.Checked = false; search.Text = ""; sourceFilter.SelectedIndex = 0;
+            ClearPreview();
+            HasSession = true;
+            IsBusy = false;
+            stopBtn.Visible = false;
+            OnResizeHeader();
+            long bytes = r.files.Sum(f => f.Size);
+            TitleLabel.Text = $"Saved scan — {r.files.Count:N0} files ({FileTypes.FormatSize(bytes)})";
+            bool sourceThere = File.Exists(disk.Path) || disk.Path.StartsWith(@"\\.\");
+            SubtitleLabel.Text = r.raw.Title + " · scanned " + r.raw.Created.ToString("g") +
+                (sourceThere ? "" : " · source not connected: only reconstructed files can be recovered");
+            phaseLabel.Text = r.raw.Stopped ? "Saved scan (stopped before it finished)" : "Saved scan";
+            percentLabel.Text = "";
+            progress.Indeterminate = false;
+            progress.Value = r.raw.Stopped ? 0 : 1;
+            detailLabel.Text = $"{r.files.Count(f => f.Source == FoundSource.QuickScan):N0} files from the file system · " +
+                               $"{r.files.Count(f => f.Source == FoundSource.DeepScan):N0} reconstructed" + (r.vault != null ? " in " + r.vault : "");
+            UpdateTiles();
+            RebuildView();
+        }
+
         async Task RunAsync()
         {
             IsBusy = true;
@@ -395,18 +443,23 @@ namespace SpindleRecovery.UI
                     if (cts.IsCancellationRequested) break;
                     i++;
                     phaseLabel.Text = $"Quick Scan — reading the file system of {qp.DisplayName}";
-                    detailLabel.Text = quickTargets.Count > 1 ? $"Partition {i} of {quickTargets.Count}" : "Looking for deleted file records in the FAT/exFAT directory tables";
-                    progress.Indeterminate = true;
+                    var where = qp.IsNtfs ? "the NTFS Master File Table" : "the FAT/exFAT directory tables";
+                    detailLabel.Text = (quickTargets.Count > 1 ? $"Partition {i} of {quickTargets.Count} · " : "") + "Looking for deleted file records in " + where;
+                    progress.Indeterminate = !qp.IsNtfs;
+                    progress.Value = 0;
                     percentLabel.Text = "";
+                    quickProgress = -1;
+                    quickRunning = qp.IsNtfs;
                     try
                     {
-                        var files = await RecoveryService.QuickScanAsync(qp, cts.Token);
+                        var files = await RecoveryService.QuickScanAsync(qp, cts.Token, f => quickProgress = f);
                         quickFound += files.Count;
                         lock (all) all.AddRange(files);
                         viewDirty = true;
                     }
                     catch (OperationCanceledException) { stopped = true; }
                     catch (Exception ex) { errors.Add("Quick Scan of " + qp.DisplayName + ": " + ex.Message); }
+                    quickRunning = false;
                 }
                 progress.Indeterminate = false;
 
@@ -454,6 +507,11 @@ namespace SpindleRecovery.UI
             if (quickTargets.Count > 0) parts.Add($"Quick Scan: {quickFound:N0} files listed");
             if (deep != null) parts.Add($"Deep Scan: {all.Count(f => f.Source == FoundSource.DeepScan):N0} files reconstructed in {deep.VaultDir}");
             detailLabel.Text = string.Join("   ·   ", parts);
+            if (count > 0)
+            {
+                try { lock (all) ScanStore.Save(disk, part, deep?.VaultDir, all, stopped); }
+                catch (Exception ex) { errors.Add("The scan results could not be saved: " + ex.Message); }
+            }
             if (errors.Count > 0)
                 MessageBox.Show(this, string.Join("\n\n", errors), "Some steps reported a problem", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             else if (count == 0 && !stopped)
@@ -466,7 +524,8 @@ namespace SpindleRecovery.UI
         {
             stopBtn.Location = new Point(Header.Width - stopBtn.Width, Theme.S(4));
             backBtn.Location = new Point((stopBtn.Visible ? stopBtn.Left - Theme.S(10) : Header.Width) - backBtn.Width, Theme.S(4));
-            TitleLabel.MaximumSize = new Size(Math.Max(Theme.S(200), backBtn.Left - Theme.S(20)), 0);
+            TitleLabel.AutoSize = false;
+            TitleLabel.Size = new Size(Math.Max(Theme.S(200), backBtn.Left - Theme.S(20)), Theme.S(38));
         }
 
         bool ConfirmStop()
@@ -500,6 +559,11 @@ namespace SpindleRecovery.UI
         void Tick()
         {
             OnResizeHeader();
+            if (quickRunning && quickProgress >= 0)
+            {
+                progress.Value = quickProgress;
+                percentLabel.Text = $"{quickProgress * 100:0}%";
+            }
             if (deepRunning)
             {
                 var p = lastProgress;
@@ -648,9 +712,7 @@ namespace SpindleRecovery.UI
             {
                 lines.Add("Original folder:  " + f.Folder);
                 lines.Add("");
-                lines.Add(f.Deleted
-                    ? "Deleted entry. It will be recovered with its original name; if the space was reused the content may be damaged."
-                    : "This file still exists on the source drive.");
+                lines.Add(!f.Deleted ? "This file still exists on the source drive." : ChanceExplanation(f));
                 if (f.Name.StartsWith("_")) lines.Add("FAT replaces the first letter of deleted short names with \"_\".");
             }
             else
@@ -663,21 +725,48 @@ namespace SpindleRecovery.UI
             previewInfo.Height = Math.Max(Theme.S(20), Math.Min(need + Theme.S(4), preview.Height - previewInfo.Top - Theme.S(56)));
             previewOpen.Top = previewInfo.Bottom + Theme.S(8);
             previewOpen.Visible = f.Source == FoundSource.DeepScan;
-            if (f.Source == FoundSource.DeepScan && imageExt.Contains(f.Extension ?? "") && f.Size < 40_000_000)
+            int token = ++previewToken;
+            bool canRead = f.Source == FoundSource.DeepScan || f.Ntfs != null;
+            if (canRead && imageExt.Contains(f.Extension ?? "") && f.Size < 40_000_000 && f.Chance != RecoveryChance.Unsupported)
+                LoadPreviewAsync(f, token);
+            previewImage.Invalidate();
+        }
+
+        static string ChanceExplanation(FoundFile f)
+        {
+            switch (f.Chance)
             {
-                try
+                case RecoveryChance.Good: return "Recovery chance: good. None of its disk space has been reused since it was deleted.";
+                case RecoveryChance.PartlyOverwritten: return $"Recovery chance: partial. About {f.Ntfs?.OverwrittenFraction * 100:0}% of its disk space now belongs to other files, so parts will be damaged.";
+                case RecoveryChance.Overwritten: return "Recovery chance: poor. Its disk space has been reused by other files. Try Deep Scan for an older copy.";
+                case RecoveryChance.Unsupported: return "NTFS-compressed or encrypted (EFS) file: Quick Scan cannot rebuild it. Deep Scan may find it.";
+                default: return "Deleted entry. It will be recovered with its original name; if the space was reused the content may be damaged.";
+            }
+        }
+
+        /// <summary>Decodes a picture in the background, straight from the vault or from the source disk.</summary>
+        async void LoadPreviewAsync(FoundFile f, int token)
+        {
+            try
+            {
+                var bytes = await RecoveryService.ReadHeadAsync(f, (int)Math.Min(f.Size, 40_000_000));
+                if (bytes == null || token != previewToken) return;
+                Bitmap bmp = await System.Threading.Tasks.Task.Run(() =>
                 {
-                    using (var fs = new FileStream(f.FullPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                    using (var img = Image.FromStream(fs))
+                    using (var ms = new MemoryStream(bytes))
+                    using (var img = Image.FromStream(ms))
                     {
                         var max = previewImage.Size;
                         double scale = Math.Min(1.0, Math.Min((double)max.Width * 2 / img.Width, (double)max.Height * 2 / img.Height));
-                        previewImage.Image = new Bitmap(img, Math.Max(1, (int)(img.Width * scale)), Math.Max(1, (int)(img.Height * scale)));
+                        return new Bitmap(img, Math.Max(1, (int)(img.Width * scale)), Math.Max(1, (int)(img.Height * scale)));
                     }
-                }
-                catch { /* not a decodable picture */ }
+                });
+                if (token != previewToken) { bmp.Dispose(); return; }
+                var old = previewImage.Image;
+                previewImage.Image = bmp;
+                old?.Dispose();
             }
-            previewImage.Invalidate();
+            catch { /* not decodable (damaged or not a picture) */ }
         }
 
         void PaintPreviewPlaceholder(object sender, PaintEventArgs e)
@@ -690,7 +779,7 @@ namespace SpindleRecovery.UI
             var color = f == null ? Theme.TextFaint : Theme.CategoryColors[(int)cat];
             float s = Theme.S(56f);
             Icons.Draw(g, Icons.ForCategory(cat), new RectangleF((previewImage.Width - s) / 2, (previewImage.Height - s) / 2 - Theme.S(8), s, s), color);
-            if (f != null && f.Source == FoundSource.QuickScan)
+            if (f != null && f.Source == FoundSource.QuickScan && f.Ntfs == null)
             {
                 var t = "Preview after recovery";
                 using (var b = new SolidBrush(Theme.TextMuted))
@@ -771,7 +860,7 @@ namespace SpindleRecovery.UI
                     try
                     {
                         var r = await RecoveryService.RecoverQuickFilesAsync(grp.Key, grp, sub, CancellationToken.None);
-                        ok += r.ok; failed += r.failed;
+                        ok += r.Ok; failed += r.Failed;
                     }
                     catch { failed += grp.Count(); }
                     progress.Indeterminate = false;

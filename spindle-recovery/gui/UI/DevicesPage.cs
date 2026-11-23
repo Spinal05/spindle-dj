@@ -22,6 +22,7 @@ namespace SpindleRecovery.UI
         readonly FlatButton searchBtn = FlatButton.Create("Search for lost data", ButtonStyle.Primary, 210, Icons.Kind.Search);
         readonly FlatButton refreshBtn = FlatButton.Create("Refresh", ButtonStyle.Secondary, 110);
         readonly FlatButton imageBtn = FlatButton.Create("Attach disk image…", ButtonStyle.Secondary, 180, Icons.Kind.Image);
+        readonly FlatButton savedBtn = FlatButton.Create("Saved scans…", ButtonStyle.Secondary, 150, Icons.Kind.Folder);
         readonly List<DiskInfo> images = new List<DiskInfo>();
         List<DiskInfo> devices = new List<DiskInfo>();
 
@@ -36,6 +37,8 @@ namespace SpindleRecovery.UI
             imageBtn.Location = new Point(refreshBtn.Right + Theme.S(10), 0);
             toolbar.Controls.Add(refreshBtn);
             toolbar.Controls.Add(imageBtn);
+            savedBtn.Location = new Point(imageBtn.Right + Theme.S(10), 0);
+            toolbar.Controls.Add(savedBtn);
 
             list.Dock = DockStyle.Fill;
             listCard.Dock = DockStyle.Fill;
@@ -85,6 +88,7 @@ namespace SpindleRecovery.UI
             searchBtn.Click += (s, e) => StartSearch();
             refreshBtn.Click += (s, e) => RefreshDevices();
             imageBtn.Click += (s, e) => AttachImage();
+            savedBtn.Click += (s, e) => OpenSavedScans();
             UpdateSelection();
         }
 
@@ -141,6 +145,25 @@ namespace SpindleRecovery.UI
             catch (Exception ex) { MainForm.Error(this, "The disk image could not be opened.", ex); }
         }
 
+        void OpenSavedScans()
+        {
+            using (var dlg = new SavedScansDialog())
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK || dlg.SelectedId == null) return;
+                if (MainForm.Instance.Scan.IsBusy)
+                {
+                    MessageBox.Show(this, "Stop the running scan before opening a saved one.", "Saved scans", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                try
+                {
+                    MainForm.Instance.Scan.LoadSaved(dlg.SelectedId);
+                    MainForm.Instance.Show(MainForm.Instance.Scan);
+                }
+                catch (Exception ex) { MainForm.Error(this, "The saved scan could not be opened.", ex); }
+            }
+        }
+
         void UpdateSelection()
         {
             var d = list.SelectedDisk;
@@ -176,8 +199,8 @@ namespace SpindleRecovery.UI
             var quickTargets = (p != null ? new List<PartitionInfo> { p } : d.Partitions).Where(x => x.SupportsQuickScan).ToList();
             if (m == ScanMethod.QuickScan && quickTargets.Count == 0)
             {
-                MessageBox.Show(this, "Quick Scan reads the FAT/exFAT file system to list deleted files with their original names.\n\n" +
-                    "This selection has no FAT/exFAT partition, so use Deep Scan (or All recovery methods) instead.",
+                MessageBox.Show(this, "Quick Scan reads the NTFS, FAT or exFAT file system to list deleted files with their original names.\n\n" +
+                    "This selection has no NTFS/FAT/exFAT partition, so use Deep Scan (or All recovery methods) instead.",
                     "Quick Scan not available", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }

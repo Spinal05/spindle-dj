@@ -50,8 +50,9 @@ namespace SpindleRecovery.Engine
             }
         }
 
-        /// <summary>TestDisk can list deleted files natively on these file systems in this build.</summary>
-        public bool SupportsQuickScan
+        public bool IsNtfs => ((Type ?? "") + " " + (FileSystemInfo ?? "")).ToUpperInvariant().Contains("NTFS");
+
+        public bool IsFat
         {
             get
             {
@@ -59,6 +60,9 @@ namespace SpindleRecovery.Engine
                 return t.Contains("FAT") && !t.Contains("NTFS");
             }
         }
+
+        /// <summary>Quick Scan (original names and folders): FAT/exFAT via TestDisk, NTFS via the built-in MFT reader.</summary>
+        public bool SupportsQuickScan => IsFat || IsNtfs;
 
         public string DisplayName
         {
@@ -88,8 +92,34 @@ namespace SpindleRecovery.Engine
         public string Extension;
         public bool Checked;
         public PartitionInfo Partition; // quick scan origin
+        public RecoveryChance Chance;   // estimated from the file system's free-space map (NTFS)
+        public NtfsEntry Ntfs;          // MFT record, for NTFS quick-scan results
 
-        public string StatusText => Source == FoundSource.DeepScan ? "Reconstructed" : (Deleted ? "Deleted" : "Existing");
+        public string ChanceText
+        {
+            get
+            {
+                switch (Chance)
+                {
+                    case RecoveryChance.Good: return "good";
+                    case RecoveryChance.PartlyOverwritten: return "partly overwritten";
+                    case RecoveryChance.Overwritten: return "overwritten";
+                    case RecoveryChance.Unsupported: return "compressed/encrypted";
+                    default: return null;
+                }
+            }
+        }
+
+        public string StatusText
+        {
+            get
+            {
+                if (Source == FoundSource.DeepScan) return "Reconstructed";
+                if (!Deleted) return "Existing";
+                var c = ChanceText;
+                return c == null ? "Deleted" : "Deleted · " + c;
+            }
+        }
     }
 
     public class PartitionTableResult

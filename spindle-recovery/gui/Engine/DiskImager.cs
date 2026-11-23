@@ -27,7 +27,7 @@ namespace SpindleRecovery.Engine
         [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
         static extern SafeFileHandle CreateFile(string name, uint access, uint share, IntPtr sec, uint disposition, uint flags, IntPtr template);
 
-        static Stream OpenSource(string path)
+        public static Stream OpenSource(string path)
         {
             if (EngineHost.IsWindows && path.StartsWith(@"\\.\"))
             {
