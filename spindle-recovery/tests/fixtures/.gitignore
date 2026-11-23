@@ -1,0 +1,2 @@
+# test fixtures include real engine logs; never ignore them
+!*.log
