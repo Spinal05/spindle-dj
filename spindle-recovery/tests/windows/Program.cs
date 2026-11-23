@@ -52,6 +52,19 @@ static class WinTests
 
         try { Run(fatDisk, ntfsDisk, expected, outDir); }
         catch (Exception ex) { Check(false, "unexpected exception: " + ex); }
+        try
+        {
+            // keep every engine log for the CI artifact
+            var logs = Path.Combine(outDir, "engine-logs");
+            foreach (var d in Directory.GetDirectories(EngineHost.SessionsDir))
+                foreach (var f in Directory.GetFiles(d, "*.*"))
+                {
+                    var t = Path.Combine(logs, Path.GetFileName(d));
+                    Directory.CreateDirectory(t);
+                    File.Copy(f, Path.Combine(t, Path.GetFileName(f)), true);
+                }
+        }
+        catch (Exception ex) { Console.WriteLine("could not collect logs: " + ex.Message); }
 
         Console.WriteLine();
         Console.WriteLine($"{pass} passed, {fail} failed");
@@ -129,7 +142,15 @@ static class WinTests
             foreach (var e in mine.Where(x => x.Deleted))
             {
                 var p = Path.Combine(dest, e.Path.TrimStart('/').Replace('/', '\\'));
-                Check(File.Exists(p) && Md5(p) == e.Md5, "byte-for-byte: " + e.Path);
+                if (!Check(File.Exists(p) && Md5(p) == e.Md5, "byte-for-byte: " + e.Path) && File.Exists(p))
+                {
+                    var f = files.First(x => string.Equals(x.FullPath, e.Path, StringComparison.OrdinalIgnoreCase));
+                    var got = File.ReadAllBytes(p);
+                    Console.WriteLine($"         listed size {f.Size}, recovered {got.Length} bytes, md5 {Md5(p)}, expected {e.Md5}");
+                    Console.WriteLine("         first bytes: " + BitConverter.ToString(got, 0, Math.Min(16, got.Length)));
+                    int nz = got.Count(b => b != 0);
+                    Console.WriteLine($"         non-zero bytes: {nz} of {got.Length}");
+                }
             }
         }
 

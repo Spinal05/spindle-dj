@@ -78,13 +78,25 @@ jobs:
           & $signtool.FullName verify /pa app/SpindleRecovery.exe
           Remove-Item $pfx
           (Get-FileHash -Algorithm SHA256 app/SpindleRecovery.exe).Hash.ToLower() + '  SpindleRecovery.exe' | Set-Content app/SHA256SUMS
+      - name: Collect diagnostics
+        if: always()
+        shell: pwsh
+        run: |
+          $d = Join-Path $env:RUNNER_TEMP 'diagnostics'
+          New-Item -ItemType Directory -Force $d | Out-Null
+          Copy-Item "$env:RUNNER_TEMP/spindle-recovery-windows.png", "${{ steps.disks.outputs.work }}/expected.txt" $d -ErrorAction SilentlyContinue
+          Copy-Item "$env:RUNNER_TEMP/recovered/engine-logs" $d -Recurse -ErrorAction SilentlyContinue
+          # the FAT32 test disk itself (detached first so the image is consistent)
+          $vhd = "${{ steps.disks.outputs.work }}/fat.vhd"
+          if (Test-Path $vhd) {
+            Dismount-DiskImage -ImagePath $vhd -ErrorAction SilentlyContinue | Out-Null
+            Compress-Archive -Path $vhd -DestinationPath (Join-Path $d 'fat-vhd.zip')
+          }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: windows-e2e-results
-          path: |
-            ${{ runner.temp }}/spindle-recovery-windows.png
-            ${{ steps.disks.outputs.work }}/expected.txt
+          path: ${{ runner.temp }}/diagnostics/
       - uses: actions/upload-artifact@v4
         with:
           name: SpindleRecovery-win-x64-tested

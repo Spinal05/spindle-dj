@@ -33,7 +33,7 @@ namespace SpindleRecovery.Engine
             {
                 var h = CreateFile(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
                 if (h.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot open " + path);
-                return new FileStream(h, FileAccess.Read, 0, false);
+                return new FileStream(h, FileAccess.Read, 1, false); // bufferSize 1 = unbuffered (0 is rejected by .NET Framework)
             }
             return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 20);
         }
