@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace SpindleRecovery.Engine
 {
@@ -129,5 +130,14 @@ namespace SpindleRecovery.Engine
         public string PartitionTableType;
         public bool WriteDone;
         public string RawLog;
+
+        /// <summary>
+        /// Partitions TestDisk found that the current table does not contain. Extended-partition
+        /// containers are ignored: TestDisk often proposes wrapping an existing, healthy partition
+        /// in an extended container (e.g. when it is not cylinder-aligned), which is not a loss.
+        /// </summary>
+        public List<PartitionInfo> Missing =>
+            Found.Where(f => f.Status != 'E' &&
+                             !Current.Any(c => c.StartSector == f.StartSector && c.SizeSectors == f.SizeSectors)).ToList();
     }
 }

@@ -184,7 +184,8 @@ namespace SpindleRecovery.UI
         {
             bool has = diskBox.SelectedIndex >= 0;
             analyzeBtn.Enabled = deeperBtn.Enabled = backupBtn.Enabled = has;
-            writeBtn.Enabled = last != null && last.Found.Count > 0 && lastDisk != null && !lastDisk.ReadOnly;
+            // Writing only makes sense when TestDisk found partitions the current table lacks.
+            writeBtn.Enabled = last != null && last.Missing.Count > 0 && lastDisk != null && !lastDisk.ReadOnly;
             logBtn.Enabled = last != null;
         }
 
@@ -203,12 +204,12 @@ namespace SpindleRecovery.UI
                 Fill(currentGrid, last.Current);
                 Fill(foundGrid, last.Found);
                 currentTitle.Text = "Current partition table" + (string.IsNullOrEmpty(last.PartitionTableType) ? "" : "  ·  " + last.PartitionTableType);
-                var missing = last.Found.Count(f => !last.Current.Any(c => c.StartSector == f.StartSector && c.SizeSectors == f.SizeSectors));
+                var missing = last.Missing.Count;
                 status.Text = last.Found.Count == 0
                     ? "No partitions found." + (deeper ? "" : " Try Deeper search.")
                     : missing > 0
                         ? $"{missing} partition{(missing == 1 ? "" : "s")} found that the current table does not contain. Review them, then Write partition table to restore."
-                        : $"{last.Found.Count} partition{(last.Found.Count == 1 ? "" : "s")} found; the partition table matches what is on the disk." + (deeper ? "" : " Use Deeper search if a partition is still missing.");
+                        : "Every partition TestDisk found is already in the partition table, so there is nothing to restore." + (deeper ? "" : " Use Deeper search if a partition is still missing.");
             }
             catch (Exception ex) { MainForm.Error(this, "The analysis failed.", ex); status.Text = "Analysis failed."; }
             finally { SetBusy(false, status.Text); }
@@ -286,7 +287,7 @@ namespace SpindleRecovery.UI
                 case '*': return "Bootable";
                 case 'P': return "Primary";
                 case 'L': return "Logical";
-                case 'E': return "Extended";
+                case 'E': return "Extended (container)";
                 case 'D': return "Deleted";
                 default: return "Found";
             }

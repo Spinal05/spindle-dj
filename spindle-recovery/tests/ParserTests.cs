@@ -84,6 +84,14 @@ static class ParserTests
         Check(r.Found[0].Type == "FAT32" && r.Found[0].StartSector == 2048 && r.Found[0].Label == "CAMERA_SD", "found partition details");
         Check(r.PartitionTableType == "Intel", "partition table type");
         Check(!r.WriteDone, "nothing written");
+        Check(r.Missing.Count == 1, "the lost partition is reported missing (Write enabled)");
+
+        Console.WriteLine("Partition analysis of a healthy Windows-formatted FAT32 disk (captured on Windows CI)");
+        var winDisk = new DiskInfo { Path = @"\\.\PhysicalDrive2" };
+        var w = TestDiskParser.ParseAnalysis(Text("analyze-windows-fat32.log"), winDisk);
+        Check(w.Current.Count == 1 && w.Current[0].StartSector == 128, "current FAT32 partition at sector 128");
+        Check(w.Found.Count == 2 && w.Found[0].Status == 'E' && w.Found[1].Status == 'L', "TestDisk proposes extended + logical");
+        Check(w.Missing.Count == 0, "extended container is not counted as a lost partition (Write stays disabled)");
 
         Console.WriteLine("PhotoRec command line");
         var opts = new DeepScanOptions
