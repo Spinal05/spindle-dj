@@ -1,0 +1,25 @@
+name: Spindle Recovery (Windows build)
+on:
+  push:
+    branches: [main]
+    paths: ['spindle-recovery/**', '.github/workflows/spindle-recovery.yml']
+  pull_request:
+    paths: ['spindle-recovery/**', '.github/workflows/spindle-recovery.yml']
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cross-compilers and test runtime
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 autoconf automake libtool pkg-config mono-devel dotnet-sdk-8.0
+      - name: Build engines + GUI, run parser tests
+        run: ./spindle-recovery/build.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpindleRecovery-win-x64
+          path: |
+            spindle-recovery/bin/SpindleRecovery.exe
+            spindle-recovery/bin/SHA256SUMS

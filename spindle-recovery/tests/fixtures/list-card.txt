@@ -1,0 +1,13 @@
+TestDisk 7.2, Data Recovery Utility, February 2024
+Christophe GRENIER <grenier@cgsecurity.org>
+https://www.cgsecurity.org
+Please wait...
+Disk card.img - 134 MB / 128 MiB - CHS 17 255 63
+Sector size:512
+
+
+Disk card.img - 134 MB / 128 MiB - CHS 17 255 63
+     Partition			Start        End    Size in sectors
+ 1 P FAT32 LBA                0  32 33    16  81  1     260096 [CAMERA_SD]
+     FAT32, blocksize=512
+

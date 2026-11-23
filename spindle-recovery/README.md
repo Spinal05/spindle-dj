@@ -1,0 +1,92 @@
+# Spindle Recovery
+
+**A graphical data-recovery and partition-recovery app for Windows, built on TestDisk & PhotoRec 7.2.**
+
+Pick a drive, press **Search for lost data**, tick the files you want back and press **Recover**. Under the hood it drives the real TestDisk and PhotoRec engines, compiled from the official 7.2 source, so you get their recovery power without the text-mode menus.
+
+![Choosing a device](docs/screenshots/01-choose-device.png)
+
+## Download
+
+**[`bin/SpindleRecovery.exe`](bin/SpindleRecovery.exe)**: one 1.1 MB file, no installer. The TestDisk and PhotoRec engines are built in.
+
+- Windows 10 or 11, 64-bit. It uses the .NET Framework 4.8 that ships with Windows, so nothing else needs installing.
+- Windows asks for administrator rights when it starts, because reading raw disks requires them.
+- SmartScreen may warn that the app is unrecognised, because it is not code-signed. Choose **More info → Run anyway**.
+- Check the download with `certutil -hashfile SpindleRecovery.exe SHA256` against [`bin/SHA256SUMS`](bin/SHA256SUMS).
+
+## What it does
+
+| Tool | Engine | What it's for |
+|---|---|---|
+| **Quick Scan** | TestDisk | Reads FAT12/16/32 and exFAT directory tables and lists deleted files **with their original names and folders**. It reads the source and never writes to it. Recovery copies only the files you tick. |
+| **Deep Scan** | PhotoRec | Ignores the file system and rebuilds 480+ file formats (photos, RAW, video, audio, Office, PDF, archives…) from their content signatures. Works on formatted, corrupted, NTFS, exFAT, ext4, HFS+ and unknown file systems. |
+| **Partition Recovery** | TestDisk | Finds lost or deleted partitions (quick analysis + deeper search), shows them next to the current table and rewrites the partition table. It backs up the old table first and asks for confirmation. |
+| **Byte-to-byte Backup** | built-in | Images a failing disk or partition to an `.img` file. Unreadable sectors are retried one at a time and zero-filled. You can then scan the image instead of the dying drive. |
+
+You can also attach disk images: `.img`, `.dd`, `.raw`, `.bin`, `.iso` or fixed `.vhd`. Use the button, drag the file onto the window, or pass its path on the command line.
+
+| | |
+|---|---|
+| ![Deep Scan options](docs/screenshots/02-deep-scan-options.png) | ![Scan results](docs/screenshots/03-scan-results.png) |
+| ![Reconstructed files with preview](docs/screenshots/04-reconstructed-preview.png) | ![Partition recovery](docs/screenshots/05-partition-recovery.png) |
+
+### Using it
+
+1. **Data Recovery** lists every disk with its partitions. Select a whole disk or one partition.
+2. Choose a method: **All recovery methods** (the default), **Quick Scan** or **Deep Scan**, then **Search for lost data**.
+3. For Deep Scan, pick the file types and a **recovery vault** folder. Put the vault on a *different* drive; the app warns you if you pick the drive being recovered.
+4. Results arrive while the scan runs. Filter by category tile, by status (Deleted / Existing / Reconstructed) or by name. Reconstructed photos show a preview.
+5. Tick files and press **Recover**. Quick Scan files keep their folder structure; Deep Scan files are grouped by type.
+
+Logs for every engine run are kept in `%LOCALAPPDATA%\SpindleRecovery\sessions`.
+
+### Limits of this build
+
+- **Quick Scan (undelete with original names) supports FAT and exFAT** in this build. TestDisk's NTFS and ext2/3/4 undelete need the ntfs-3g and e2fsprogs libraries, which are not cross-compiled here yet. On NTFS and ext4 drives, deleted files are recovered by **Deep Scan**, which works on every file system but cannot restore original names.
+- **Not a forensic tool.** If the data matters a lot and the drive is failing physically (clicking, not detected), stop and contact a professional lab.
+- **Testing.** Recovery logic was checked end to end on disk images. That covered undeleting files byte-for-byte, rebuilding a wiped partition table, carving deleted photos and documents, and imaging. Raw `\\.\PhysicalDriveN` access goes through TestDisk's own Win32 disk layer and was not exercised on real Windows hardware during development.
+
+## How it's built
+
+```
+spindle-recovery/
+├── engine/
+│   ├── build-engine.sh          # fetches TestDisk 7.2, applies the patch, cross-compiles with MinGW-w64
+│   └── patches/0001-spindle-recovery-gui-hooks.patch
+├── gui/                         # C# WinForms app (.NET Framework 4.8), engines embedded as resources
+│   ├── Engine/                  # runs the engines and parses their output
+│   └── UI/                      # screens, custom-drawn controls and icons
+├── tests/                       # parser tests against real TestDisk output (tests/fixtures)
+├── bin/SpindleRecovery.exe      # the compiled Windows app
+└── build.sh                     # builds everything above
+```
+
+### Engine changes
+
+The GUI drives `testdisk.exe` and `photorec.exe` in their scripted `/cmd` mode. TestDisk 7.2 was changed in four small, non-invasive ways ([the patch](engine/patches/0001-spindle-recovery-gui-hooks.patch), about 120 lines):
+
+1. **Progress output.** Without the ncurses UI, PhotoRec printed no progress at all. It now prints `@@PROGRESS pass=… sector=… total=… files=…` once per second, in both the block-size pass and the carving pass.
+2. **Graceful stop.** PhotoRec stops cleanly, keeping the files already recovered, when the file named by `PHOTOREC_STOP_FILE` appears.
+3. **Selective undelete.** TestDisk's `filecopy` command copied a whole partition. It now copies only the paths listed in the file named by `TESTDISK_COPY_LIST`.
+4. **Windows device paths.** `\\.\PhysicalDriveN` and `\\.\X:` given on the command line now open through TestDisk's native Win32 disk layer.
+
+### Building from source (Linux or WSL)
+
+```bash
+sudo apt-get install mingw-w64 autoconf automake libtool pkg-config git dotnet-sdk-8.0 mono-devel
+./spindle-recovery/build.sh        # → spindle-recovery/bin/SpindleRecovery.exe
+```
+
+`build.sh` clones the official `v7.2` tag from [github.com/cgsecurity/testdisk](https://github.com/cgsecurity/testdisk). That is the same release as `https://www.cgsecurity.org/testdisk-7.2.tar.bz2`; to build from the tarball instead, set `TESTDISK_TARBALL=/path/to/testdisk-7.2.tar.bz2`. The engines are then cross-compiled with MinGW-w64 as static binaries that depend only on Windows system DLLs. Finally, the GUI is built with the .NET SDK, which can target .NET Framework 4.8 from Linux. The `Spindle Recovery (Windows build)` GitHub Actions workflow does the same and publishes the `.exe` as an artifact.
+
+Parser tests: `./spindle-recovery/tests/run-tests.sh` (needs Mono).
+
+## Licence and credits
+
+Spindle Recovery is free software under the **GNU General Public License v2 or later** ([COPYING](COPYING)), the same licence as TestDisk and PhotoRec.
+
+- **TestDisk & PhotoRec** © Christophe GRENIER and contributors, <https://www.cgsecurity.org>. The source used is TestDisk 7.2 plus the patch in `engine/patches/`; `engine/build-engine.sh` rebuilds the exact binaries.
+- The interface design, icons and code in `gui/` are original to this project. The layout follows the familiar "pick a drive → scan → review → recover" flow of modern consumer recovery apps, but Spindle Recovery is an independent project. It is not affiliated with, endorsed by, or derived from CGSecurity, CleverFiles/Disk Drill or any other vendor.
+
+There is **no warranty**. Always recover to a different drive from the one you are recovering.
