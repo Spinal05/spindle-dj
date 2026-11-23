@@ -1,25 +1,91 @@
 name: Spindle Recovery (Windows build)
 on:
   push:
-    branches: [main]
     paths: ['spindle-recovery/**', '.github/workflows/spindle-recovery.yml']
   pull_request:
     paths: ['spindle-recovery/**', '.github/workflows/spindle-recovery.yml']
   workflow_dispatch:
+
 jobs:
   build:
+    name: Build engines + GUI (Linux cross-compile)
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
       - name: Install cross-compilers and test runtime
         run: |
           sudo apt-get update
-          sudo apt-get install -y mingw-w64 autoconf automake libtool pkg-config mono-devel dotnet-sdk-8.0
-      - name: Build engines + GUI, run parser tests
+          sudo apt-get install -y mingw-w64 autoconf automake libtool pkg-config mono-devel
+      - name: Build engines + GUI, run unit tests
         run: ./spindle-recovery/build.sh
+      - name: Build the Windows end-to-end test runner
+        run: dotnet build spindle-recovery/tests/windows/WinTests.csproj -c Release -o out/wintests -p:SpindleExe="$PWD/spindle-recovery/bin/SpindleRecovery.exe"
+      - name: Committed .exe matches the source
+        run: |
+          if ! cmp -s spindle-recovery/bin/SpindleRecovery.exe spindle-recovery/gui/bin/publish/SpindleRecovery.exe; then
+            echo "::warning::bin/SpindleRecovery.exe differs from a fresh build of this commit (rebuild and commit it)"
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: SpindleRecovery-win-x64
           path: |
             spindle-recovery/bin/SpindleRecovery.exe
             spindle-recovery/bin/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wintests
+          path: |
+            out/wintests/
+            spindle-recovery/tests/windows/*.ps1
+
+  windows-e2e:
+    name: End-to-end tests on Windows (virtual disks)
+    needs: build
+    runs-on: windows-2022
+    env:
+      # Optional Authenticode signing: add these repository secrets to sign the tested .exe
+      SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
+      SIGN_PFX_PASSWORD: ${{ secrets.SIGN_PFX_PASSWORD }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: SpindleRecovery-win-x64, path: app }
+      - uses: actions/download-artifact@v4
+        with: { name: wintests, path: wintests }
+      - name: Create FAT32 + NTFS virtual disks, write and delete files
+        id: disks
+        shell: pwsh
+        run: ./wintests/spindle-recovery/tests/windows/setup-disks.ps1
+      - name: Recovery tests against \\.\PhysicalDriveN
+        shell: pwsh
+        run: |
+          & ./wintests/out/wintests/WinTests.exe --fat-disk ${{ steps.disks.outputs.fat }} --ntfs-disk ${{ steps.disks.outputs.ntfs }} `
+            --expected "${{ steps.disks.outputs.work }}/expected.txt" --out "${{ runner.temp }}/recovered"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: GUI starts and shows its main window
+        shell: pwsh
+        run: ./wintests/spindle-recovery/tests/windows/gui-smoke.ps1 -Exe app/SpindleRecovery.exe -Screenshot "${{ runner.temp }}/spindle-recovery-windows.png"
+      - name: Sign the executable (when a code-signing certificate is configured)
+        if: env.SIGN_PFX_BASE64 != ''
+        shell: pwsh
+        run: |
+          $pfx = Join-Path $env:RUNNER_TEMP 'sign.pfx'
+          [IO.File]::WriteAllBytes($pfx, [Convert]::FromBase64String($env:SIGN_PFX_BASE64))
+          $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin\*\x64\signtool.exe' | Sort-Object FullName -Descending | Select-Object -First 1
+          & $signtool.FullName sign /fd sha256 /tr http://timestamp.digicert.com /td sha256 /f $pfx /p $env:SIGN_PFX_PASSWORD app/SpindleRecovery.exe
+          & $signtool.FullName verify /pa app/SpindleRecovery.exe
+          Remove-Item $pfx
+          (Get-FileHash -Algorithm SHA256 app/SpindleRecovery.exe).Hash.ToLower() + '  SpindleRecovery.exe' | Set-Content app/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-e2e-results
+          path: |
+            ${{ runner.temp }}/spindle-recovery-windows.png
+            ${{ steps.disks.outputs.work }}/expected.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SpindleRecovery-win-x64-tested
+          path: app/
