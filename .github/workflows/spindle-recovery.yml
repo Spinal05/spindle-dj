@@ -10,15 +10,24 @@ jobs:
   build:
     name: Build engines + GUI (Linux cross-compile)
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 8.0.x
       - name: Install cross-compilers and test runtime
+        # apt on hosted runners occasionally hangs (mirror or dpkg lock): bound each attempt and retry
         run: |
-          sudo apt-get update
-          sudo apt-get install -y mingw-w64 autoconf automake libtool pkg-config mono-devel
+          for attempt in 1 2 3; do
+            if sudo timeout 600 apt-get -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 update &&
+               sudo timeout 900 apt-get -o Acquire::Retries=3 -o DPkg::Lock::Timeout=120 install -y --no-install-recommends \
+                 mingw-w64 autoconf automake libtool pkg-config mono-devel; then
+              exit 0
+            fi
+            echo "apt attempt $attempt failed, retrying"; sleep 15
+          done
+          exit 1
       - name: Build engines + GUI, run unit tests
         run: ./spindle-recovery/build.sh
       - name: Build the Windows end-to-end test runner
@@ -45,6 +54,7 @@ jobs:
     name: End-to-end tests on Windows (virtual disks)
     needs: build
     runs-on: windows-2022
+    timeout-minutes: 30
     env:
       # Optional Authenticode signing: add these repository secrets to sign the tested .exe
       SIGN_PFX_BASE64: ${{ secrets.SIGN_PFX_BASE64 }}
