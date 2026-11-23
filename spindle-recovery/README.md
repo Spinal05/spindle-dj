@@ -19,7 +19,7 @@ Pick a drive, press **Search for lost data**, tick the files you want back and p
 
 | Tool | Engine | What it's for |
 |---|---|---|
-| **Quick Scan** | TestDisk | Reads FAT12/16/32 and exFAT directory tables and lists deleted files **with their original names and folders**. It reads the source and never writes to it. Recovery copies only the files you tick. |
+| **Quick Scan** | TestDisk (FAT/exFAT) + built-in NTFS reader | Lists deleted files **with their original names and folders**. On NTFS it reads the Master File Table directly, keeps files whose folder was also deleted, rates each file's **recovery chance** (good / partly overwritten / overwritten) from the free-space map, and **previews pictures before recovery**. It never writes to the source. |
 | **Deep Scan** | PhotoRec | Ignores the file system and rebuilds 480+ file formats (photos, RAW, video, audio, Office, PDF, archives…) from their content signatures. Works on formatted, corrupted, NTFS, exFAT, ext4, HFS+ and unknown file systems. |
 | **Partition Recovery** | TestDisk | Finds lost or deleted partitions (quick analysis + deeper search), shows them next to the current table and rewrites the partition table. It backs up the old table first and asks for confirmation. |
 | **Byte-to-byte Backup** | built-in | Images a failing disk or partition to an `.img` file. Unreadable sectors are retried one at a time and zero-filled. You can then scan the image instead of the dying drive. |
@@ -39,11 +39,12 @@ You can also attach disk images: `.img`, `.dd`, `.raw`, `.bin`, `.iso` or fixed 
 4. Results arrive while the scan runs. Filter by category tile, by status (Deleted / Existing / Reconstructed) or by name. Reconstructed photos show a preview.
 5. Tick files and press **Recover**. Quick Scan files keep their folder structure; Deep Scan files are grouped by type.
 
-Logs for every engine run are kept in `%LOCALAPPDATA%\SpindleRecovery\sessions`.
+Every scan is saved when it ends. **Saved scans…** reopens the results later without scanning again. Logs for every engine run are kept in `%LOCALAPPDATA%\SpindleRecovery\sessions`.
 
 ### Limits of this build
 
-- **Quick Scan (undelete with original names) supports FAT and exFAT** in this build. TestDisk's NTFS and ext2/3/4 undelete need the ntfs-3g and e2fsprogs libraries, which are not cross-compiled here yet. On NTFS and ext4 drives, deleted files are recovered by **Deep Scan**, which works on every file system but cannot restore original names.
+- **Quick Scan supports NTFS, FAT and exFAT.** ext2/3/4, HFS+ and APFS are recovered by **Deep Scan**, which works on every file system but cannot restore original names. NTFS-compressed and EFS-encrypted files are flagged; Quick Scan cannot rebuild them.
+- **A stopped Deep Scan cannot be resumed yet.** Its results are saved, but continuing it starts again from the beginning (PhotoRec's resume only works in its text interface).
 - **Not a forensic tool.** If the data matters a lot and the drive is failing physically (clicking, not detected), stop and contact a professional lab.
 - **Testing.** Recovery logic was checked end to end on disk images. That covered undeleting files byte-for-byte, rebuilding a wiped partition table, carving deleted photos and documents, and imaging. Raw `\\.\PhysicalDriveN` access goes through TestDisk's own Win32 disk layer and was not exercised on real Windows hardware during development.
 
@@ -57,7 +58,8 @@ spindle-recovery/
 ├── gui/                         # C# WinForms app (.NET Framework 4.8), engines embedded as resources
 │   ├── Engine/                  # runs the engines and parses their output
 │   └── UI/                      # screens, custom-drawn controls and icons
-├── tests/                       # parser tests against real TestDisk output (tests/fixtures)
+├── tests/                       # unit tests (Mono) against real engine output and an NTFS image
+│   └── windows/                 # end-to-end tests run by CI on real Windows with virtual disks
 ├── bin/SpindleRecovery.exe      # the compiled Windows app
 └── build.sh                     # builds everything above
 ```
@@ -80,7 +82,30 @@ sudo apt-get install mingw-w64 autoconf automake libtool pkg-config git dotnet-s
 
 `build.sh` clones the official `v7.2` tag from [github.com/cgsecurity/testdisk](https://github.com/cgsecurity/testdisk). That is the same release as `https://www.cgsecurity.org/testdisk-7.2.tar.bz2`; to build from the tarball instead, set `TESTDISK_TARBALL=/path/to/testdisk-7.2.tar.bz2`. The engines are then cross-compiled with MinGW-w64 as static binaries that depend only on Windows system DLLs. Finally, the GUI is built with the .NET SDK, which can target .NET Framework 4.8 from Linux. The `Spindle Recovery (Windows build)` GitHub Actions workflow does the same and publishes the `.exe` as an artifact.
 
-Parser tests: `./spindle-recovery/tests/run-tests.sh` (needs Mono).
+Unit tests: `./spindle-recovery/tests/run-tests.sh` (needs Mono). They cover the parsers, the PhotoRec command line, NTFS recovery from a real NTFS image, and saved scans.
+
+On every push, the **Spindle Recovery (Windows build)** workflow builds the app on Linux. It then tests it on a Windows runner:
+1. `diskpart` creates FAT32 and NTFS virtual disks.
+2. Windows writes files to them and deletes some.
+3. The real `SpindleRecovery.exe` code and engines recover the deleted files from `\\.\PhysicalDriveN`, and every file is checked byte-for-byte.
+4. Deep Scan, partition analysis, imaging and the engine security checks also run, and the GUI is launched and screenshotted.
+
+### Security
+
+The app runs as administrator, so it treats its own engines as part of its trusted code:
+- They are extracted under `C:\Program Files\Spindle Recovery\engine`. That folder has its own permissions (administrators and SYSTEM: full control; users: read and execute).
+- Before every launch, each engine is checked against the copy embedded in `SpindleRecovery.exe`. A missing or modified engine is restored.
+- The engine file stays locked against writes, renames and deletes while it runs.
+- The developer environment variable `SPINDLE_ENGINE_DIR` is ignored on Windows.
+- Source drives are only ever opened read-only, except when you explicitly choose **Write partition table**.
+
+### Code signing
+
+The CI workflow signs the tested `.exe` with Authenticode when the repository has these secrets:
+- `SIGN_PFX_BASE64`: the code-signing certificate, base64-encoded `.pfx`
+- `SIGN_PFX_PASSWORD`: its password
+
+Open-source projects can get a free certificate through [SignPath Foundation](https://signpath.org). A signed build removes the SmartScreen "unrecognised app" warning once it has built up reputation.
 
 ## Licence and credits
 
