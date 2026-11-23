@@ -171,7 +171,15 @@ static class WinTests
         Section("Partition analysis (testdisk.exe analyze on the raw disk)");
         var analysis = RecoveryService.AnalyzePartitionsAsync(fatDisk, false, false, null, token).Result;
         Check(analysis.Current.Count == 1 && analysis.Found.Count == 1, $"current: {analysis.Current.Count}, found: {analysis.Found.Count}");
-        Check(analysis.Found.Count == 1 && analysis.Found[0].StartSector == fatPart.StartSector, "found partition matches the table");
+        if (!Check(analysis.Found.Count == 1 && analysis.Found[0].StartSector == fatPart.StartSector, "found partition matches the table"))
+        {
+            foreach (var p in analysis.Current) Console.WriteLine($"         current: #{p.Number} {p.Status} {p.Type} start={p.StartSector} size={p.SizeSectors} [{p.Label}] {p.FileSystemInfo}");
+            foreach (var p in analysis.Found) Console.WriteLine($"         found:   #{p.Number} {p.Status} {p.Type} start={p.StartSector} size={p.SizeSectors} [{p.Label}] {p.FileSystemInfo}");
+            var log = analysis.RawLog ?? "";
+            int at = log.IndexOf("Analyse Disk", StringComparison.Ordinal);
+            Console.WriteLine("         --- testdisk.log ---");
+            foreach (var line in log.Substring(Math.Max(0, at)).Split('\n').Take(60)) Console.WriteLine("         | " + line.TrimEnd('\r'));
+        }
         Check(!analysis.WriteDone, "nothing was written");
 
         // ------------------------------------------------------------------ imaging
