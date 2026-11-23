@@ -82,6 +82,11 @@ foreach ($p in $fatAll) { $lines.Add("fat|$p|$((Get-FileHash -Algorithm MD5 "Y:\
 foreach ($p in $ntfsAll) { $lines.Add("ntfs|$p|$((Get-FileHash -Algorithm MD5 "Z:\$p").Hash)|$([int]($ntfsDeleted -contains $p))") }
 [System.IO.File]::WriteAllLines((Join-Path $Work 'expected.txt'), $lines, [System.Text.UTF8Encoding]::new($false))
 
+# Flush file data to the disks BEFORE deleting: Windows discards cached data of files that are
+# deleted before it was written, which would leave nothing on disk to recover (unlike real use,
+# where files are deleted long after they were written).
+Write-VolumeCache -DriveLetter Y, Z
+
 $fatDeleted | ForEach-Object { Remove-Item -LiteralPath "Y:\$_" }
 Remove-Item -LiteralPath 'Z:\Users\Sam\Pictures\Summer 2026' -Recurse
 'Users\Sam\Documents\Résumé été.docx', 'Users\Sam\Documents\tiny.txt', 'Projects\big.bin' | ForEach-Object { Remove-Item -LiteralPath "Z:\$_" }
