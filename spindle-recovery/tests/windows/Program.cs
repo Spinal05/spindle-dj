@@ -85,6 +85,22 @@ static class WinTests
         if (!Check(part != null, "formatted NTFS partition found")) return;
         var quick = RecoveryService.QuickScanAsync(part, CancellationToken.None).Result;
         Check(quick.Count(f => !f.Deleted) == 0, $"the formatted volume looks empty to the file system ({quick.Count} entries)");
+        // raw check: how many MFT record signatures are on the partition at all?
+        int signatures = 0, nonZeroChunks = 0;
+        using (var dev = new SectorReader(disk.Path, disk.SectorSize))
+        {
+            long off = part.StartSector * disk.SectorSize, len = part.SizeBytes;
+            for (long pos = 0; pos < len; pos += 1 << 20)
+            {
+                var buf = dev.Read(off + pos, (int)Math.Min(1 << 20, len - pos));
+                if (buf.Any(b => b != 0)) nonZeroChunks++;
+                for (int o = 0; o + 4 <= buf.Length; o += 512)
+                    if (buf[o] == 'F' && buf[o + 1] == 'I' && buf[o + 2] == 'L' && buf[o + 3] == 'E') signatures++;
+            }
+            Console.WriteLine($"         raw read: {signatures} 'FILE' record signatures, {nonZeroChunks} non-empty MiB of {len >> 20}");
+            var v = NtfsVolume.OpenOrAssume(dev, off, len);
+            Console.WriteLine($"         volume: cluster {v.ClusterSize}, record {v.RecordSize}, live MFT {v.HasMft}, records {(v.HasMft ? v.RecordCount : 0)}");
+        }
         var started = DateTime.UtcNow;
         var lost = RecoveryService.NtfsLostRecordsAsync(part, CancellationToken.None).Result;
         var mine = expected.Where(e => e.Fs == "fmt").ToList();

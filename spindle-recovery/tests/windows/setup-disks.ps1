@@ -108,8 +108,12 @@ Remove-Item -LiteralPath 'Z:\Users\Sam\Pictures\Summer 2026' -Recurse
 'Users\Sam\Documents\Résumé été.docx', 'Users\Sam\Documents\tiny.txt', 'Projects\big.bin' | ForEach-Object { Remove-Item -LiteralPath "Z:\$_" }
 Write-VolumeCache -DriveLetter Y, Z
 
-# Quick-format W: with Windows itself: the volume becomes empty, the old file records stay on disk
+# Quick-format W: with Windows itself: the volume becomes empty, the old file records stay on disk.
+# Windows sends TRIM during a format; SSDs and virtual disks then discard the old data, hard drives do not.
+# Turn TRIM off for this format so the test disk behaves like a hard drive (the common recovery case).
+fsutil behavior set DisableDeleteNotify NTFS 1 | Out-Host
 Format-Volume -DriveLetter W -FileSystem NTFS -NewFileSystemLabel NEWDATA -Force -Confirm:$false | Out-Host
+fsutil behavior set DisableDeleteNotify NTFS 0 | Out-Host
 Write-VolumeCache -DriveLetter W
 
 Get-Content (Join-Path $Work 'expected.txt') | Out-Host
