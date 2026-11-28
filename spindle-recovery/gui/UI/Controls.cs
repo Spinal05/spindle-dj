@@ -267,8 +267,18 @@ namespace SpindleRecovery.UI
             Cursor = Cursors.Hand;
             Height = Theme.S(32);
             using (var g = CreateGraphics())
-                Width = (int)Math.Ceiling(g.MeasureString(text, Font).Width) + Theme.S(icon.HasValue ? 56 : 34);
+                Width = (int)Math.Ceiling(g.MeasureString(text, Font).Width) + Theme.S(icon.HasValue ? 44 : 28);
             TabStop = true;
+        }
+
+        /// <summary>Changes the text and resizes the chip to fit it.</summary>
+        public void SetLabel(string text)
+        {
+            if (Text == text) return;
+            Text = text;
+            using (var g = CreateGraphics())
+                Width = (int)Math.Ceiling(g.MeasureString(text, Font).Width) + Theme.S(Icon.HasValue ? 44 : 28);
+            Invalidate();
         }
 
         protected override void OnClick(EventArgs e) { Focus(); Selected = !Selected; base.OnClick(e); }
@@ -293,17 +303,17 @@ namespace SpindleRecovery.UI
                 using (var b = new SolidBrush(selected ? Color.FromArgb(28, Accent) : hover ? Color.FromArgb(246, 248, 252) : Color.White)) g.FillPath(b, path);
                 using (var p = new Pen(selected ? Accent : Focused ? Theme.Accent : Theme.Border, selected ? 1.6f : 1f)) g.DrawPath(p, path);
             }
-            float x = Theme.S(12f);
+            float x = Theme.S(10f);
             var fg = selected ? Accent : Theme.TextMuted;
             if (selected)
             {
-                Icons.Draw(g, Icons.Kind.Check, new RectangleF(x, (Height - Theme.S(14f)) / 2, Theme.S(14f), Theme.S(14f)), Accent);
-                x += Theme.S(18f);
+                Icons.Draw(g, Icons.Kind.Check, new RectangleF(x, (Height - Theme.S(13f)) / 2, Theme.S(13f), Theme.S(13f)), Accent);
+                x += Theme.S(16f);
             }
             else if (Icon.HasValue)
             {
-                Icons.Draw(g, Icon.Value, new RectangleF(x, (Height - Theme.S(16f)) / 2, Theme.S(16f), Theme.S(16f)), Theme.TextFaint);
-                x += Theme.S(20f);
+                Icons.Draw(g, Icon.Value, new RectangleF(x, (Height - Theme.S(15f)) / 2, Theme.S(15f), Theme.S(15f)), Theme.TextFaint);
+                x += Theme.S(18f);
             }
             using (var b = new SolidBrush(selected ? Theme.Text : fg))
             {

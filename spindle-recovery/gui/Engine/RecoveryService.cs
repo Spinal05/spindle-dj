@@ -23,7 +23,8 @@ namespace SpindleRecovery.Engine
     {
         public DiskInfo Disk;
         public PartitionInfo Partition;            // null = whole device
-        public HashSet<FileCategory> Categories;   // null or empty = every format PhotoRec knows
+        public HashSet<FileCategory> Categories;   // whole categories (used when Selection is null)
+        public FileSelection Selection;            // chosen formats; null = Categories; everything = all 480+ formats
         public bool FreeSpaceOnly;                 // only unallocated space (deleted files) of the partition
         public bool Paranoid = true;
         public bool KeepCorrupted;
@@ -243,15 +244,13 @@ namespace SpindleRecovery.Engine
             parts.Add("options");
             parts.Add(o.Paranoid ? "paranoid" : "paranoid_no");
             parts.Add(o.KeepCorrupted ? "keep_corrupted_file" : "keep_corrupted_file_no");
-            if (o.Categories != null && o.Categories.Count > 0 && o.Categories.Count < FileTypes.DisplayOrder.Length)
+            var sel = o.Selection ?? (o.Categories != null && o.Categories.Count > 0 ? FileSelection.FromCategories(o.Categories) : null);
+            if (sel != null && !sel.IsEverything && !sel.IsEmpty)
             {
                 parts.Add("fileopt");
                 parts.Add("everything");
                 parts.Add("disable");
-                var fams = new HashSet<string>();
-                foreach (var c in o.Categories)
-                    foreach (var f in FileTypes.PhotoRecFamilies[c]) fams.Add(f);
-                foreach (var f in fams.OrderBy(x => x, StringComparer.Ordinal)) { parts.Add(f); parts.Add("enable"); }
+                foreach (var f in sel.Families) { parts.Add(f); parts.Add("enable"); }
             }
             parts.Add(o.FreeSpaceOnly && o.Partition != null ? "freespace" : "wholespace");
             parts.Add("search");

@@ -31,9 +31,11 @@ namespace SpindleRecovery.UI
         readonly Dictionary<FileCategory, ChipToggle> chips = new Dictionary<FileCategory, ChipToggle>();
         readonly ToolTip tips = new ToolTip();
         bool syncingChips;
+        FlatButton formatsBtn;
+        FileSelection selection = FileSelection.All();
 
-        /// <summary>The file types chosen on the home screen (remembered between sessions).</summary>
-        public HashSet<FileCategory> ChosenTypes => new HashSet<FileCategory>(chips.Where(kv => kv.Value.Selected).Select(kv => kv.Key));
+        /// <summary>The formats chosen on the home screen (remembered between sessions).</summary>
+        public FileSelection Selection => selection;
         List<DiskInfo> devices = new List<DiskInfo>();
 
         /// <summary>Disk images attached in this session (shared with the other tools).</summary>
@@ -89,7 +91,7 @@ namespace SpindleRecovery.UI
             actionCard.Controls.Add(typesLabel);
             actionCard.Controls.Add(typeChips);
             actionCard.Controls.Add(typesHint);
-            actionCard.Resize += (s, e) =>
+            Action layoutCard = () =>
             {
                 searchBtn.Location = new Point(actionCard.Width - searchBtn.Width - Theme.S(16), Theme.S(14));
                 method.Location = new Point(searchBtn.Left - method.Width - Theme.S(12), searchBtn.Top + (searchBtn.Height - method.Height) / 2);
@@ -98,12 +100,14 @@ namespace SpindleRecovery.UI
                 typesLabel.Location = new Point(Theme.S(20), Theme.S(83));
                 typeChips.Location = new Point(typesLabel.Right + Theme.S(8), Theme.S(76));
                 typeChips.Width = actionCard.Width - typeChips.Left - Theme.S(16);
-                typeChips.Height = typeChips.PreferredSize.Height;
+                typeChips.Height = typeChips.GetPreferredSize(new Size(typeChips.Width, 0)).Height;
                 typesHint.Location = new Point(typeChips.Left + 2, typeChips.Bottom + Theme.S(2));
                 typesHint.Width = typeChips.Width;
                 int want = typesHint.Bottom + Theme.S(10) + actionBar.Padding.Top;
                 if (Math.Abs(actionBar.Height - want) > 2) actionBar.Height = want;
             };
+            actionCard.Resize += (s, e) => layoutCard();
+            OnActionCardResize = layoutCard;
 
             Body.Controls.Add(listCard);
             Body.Controls.Add(actionBar);
@@ -192,62 +196,96 @@ namespace SpindleRecovery.UI
             typesHint.AutoSize = false;
             typesHint.Height = Theme.S(20);
 
-            allChip = new ChipToggle("All types", null, Theme.Accent) { Margin = new Padding(0, 0, Theme.S(8), Theme.S(6)) };
+            allChip = new ChipToggle("All types", null, Theme.Accent) { Margin = new Padding(0, 0, Theme.S(6), Theme.S(6)) };
             tips.SetToolTip(allChip, "Search for every file type PhotoRec and the file systems know (480+ formats)");
             typeChips.Controls.Add(allChip);
             foreach (var c in FileTypes.DisplayOrder)
             {
+                var cat = c;
                 var chip = new ChipToggle(FileTypes.DisplayName(c), Icons.ForCategory(c), Theme.CategoryColors[(int)c])
                 {
-                    Margin = new Padding(0, 0, Theme.S(8), Theme.S(6)),
+                    Margin = new Padding(0, 0, Theme.S(6), Theme.S(6)),
                 };
-                tips.SetToolTip(chip, FileTypes.Examples(c));
+                tips.SetToolTip(chip, FileTypes.Examples(c) + "\nClick to include or leave out; use Formats… to pick individual formats.");
                 chips[c] = chip;
                 typeChips.Controls.Add(chip);
-                chip.SelectedChanged += (s, e) => TypesChanged();
+                chip.SelectedChanged += (s, e) =>
+                {
+                    if (syncingChips) return;
+                    // a category chip includes or leaves out all of its formats
+                    var ids = new HashSet<string>(selection.FormatIds);
+                    foreach (var f in FileTypes.Formats.Where(f => f.Category == cat))
+                        if (chip.Selected) ids.Add(f.Id); else ids.Remove(f.Id);
+                    SetSelection(new FileSelection(ids));
+                };
             }
             allChip.SelectedChanged += (s, e) =>
             {
                 if (syncingChips) return;
-                syncingChips = true;
                 // "All types" on selects everything; turning it off clears the choice so you can pick a few.
-                foreach (var ch in chips.Values) ch.Selected = allChip.Selected;
-                syncingChips = false;
-                TypesChanged();
+                SetSelection(allChip.Selected ? FileSelection.All() : new FileSelection(new string[0]));
             };
+            formatsBtn = FlatButton.Create("Formats…", ButtonStyle.Ghost, 92);
+            formatsBtn.Height = Theme.S(32);
+            formatsBtn.Margin = new Padding(0, 0, 0, Theme.S(6));
+            tips.SetToolTip(formatsBtn, "Pick individual formats, e.g. only JPEG and HEIC photos");
+            formatsBtn.Click += (s, e) => PickFormats();
+            typeChips.Controls.Add(formatsBtn);
 
-            // restore the last choice (all types by default)
-            var saved = new HashSet<FileCategory>();
+            SetSelection(LoadSelection(), save: false);
+        }
+
+        static FileSelection LoadSelection()
+        {
             try
             {
-                if (System.IO.File.Exists(TypesFile))
-                    foreach (var line in System.IO.File.ReadAllLines(TypesFile))
-                        if (Enum.TryParse(line.Trim(), out FileCategory c) && Enum.IsDefined(typeof(FileCategory), c)) saved.Add(c);
+                if (!System.IO.File.Exists(TypesFile)) return FileSelection.All();
+                var ids = new HashSet<string>();
+                foreach (var raw in System.IO.File.ReadAllLines(TypesFile))
+                {
+                    var line = raw.Trim();
+                    if (FileTypes.FormatsById.ContainsKey(line)) ids.Add(line);
+                    else if (Enum.TryParse(line, out FileCategory c) && Enum.IsDefined(typeof(FileCategory), c))
+                        foreach (var f in FileTypes.Formats.Where(f => f.Category == c)) ids.Add(f.Id); // older versions saved categories
+                }
+                return ids.Count == 0 ? FileSelection.All() : new FileSelection(ids);
             }
-            catch { }
-            if (saved.Count == 0) saved = FileTypes.AllCategories();
-            syncingChips = true;
-            foreach (var kv in chips) kv.Value.Selected = saved.Contains(kv.Key);
-            syncingChips = false;
-            TypesChanged();
+            catch { return FileSelection.All(); }
         }
 
-        void TypesChanged()
+        void PickFormats()
         {
-            if (syncingChips) return;
-            var chosen = ChosenTypes;
-            syncingChips = true;
-            allChip.Selected = chosen.Count == chips.Count;
-            syncingChips = false;
-            typesHint.ForeColor = chosen.Count == 0 ? Theme.Danger : Theme.TextMuted;
-            typesHint.Text = chosen.Count == 0
-                ? "Choose at least one kind of file to look for."
-                : chosen.Count == chips.Count
-                    ? "Every kind of file will be searched for. Pick fewer types for a faster scan with less to sort through."
-                    : "Only " + FileTypes.Describe(chosen) + " will be searched for and shown.";
-            searchBtn.Enabled = list.SelectedDisk != null && chosen.Count > 0;
-            try { System.IO.File.WriteAllLines(TypesFile, chosen.Select(c => c.ToString())); } catch { }
+            using (var dlg = new FormatPickerDialog(selection))
+                if (dlg.ShowDialog(this) == DialogResult.OK) SetSelection(dlg.Selection);
         }
+
+        /// <summary>Updates the chips, hint and search button for a new format choice.</summary>
+        public void SetSelection(FileSelection sel, bool save = true)
+        {
+            selection = sel;
+            syncingChips = true;
+            allChip.Selected = sel.IsEverything;
+            foreach (var kv in chips)
+            {
+                int n = sel.CountIn(kv.Key), total = FileTypes.Formats.Count(f => f.Category == kv.Key);
+                kv.Value.Selected = n > 0;
+                kv.Value.SetLabel(FileTypes.DisplayName(kv.Key) + (n > 0 && n < total ? $" {n}/{total}" : ""));
+            }
+            syncingChips = false;
+            typeChips.PerformLayout();
+            typesHint.ForeColor = sel.IsEmpty ? Theme.Danger : Theme.TextMuted;
+            typesHint.Text = sel.IsEmpty
+                ? "Choose at least one kind of file to look for."
+                : sel.IsEverything
+                    ? "Every kind of file will be searched for. Pick fewer types for a faster scan with less to sort through."
+                    : "Only " + sel.Describe() + " will be searched for and shown.";
+            searchBtn.Enabled = list.SelectedDisk != null && !sel.IsEmpty;
+            if (save) try { System.IO.File.WriteAllLines(TypesFile, sel.FormatIds.OrderBy(x => x)); } catch { }
+            actionBar.PerformLayout();
+            OnActionCardResize?.Invoke();
+        }
+
+        Action OnActionCardResize;
 
         void OpenSavedScans()
         {
@@ -272,7 +310,7 @@ namespace SpindleRecovery.UI
         {
             var d = list.SelectedDisk;
             var p = list.SelectedPartition;
-            searchBtn.Enabled = d != null && chips.Values.Any(c => c.Selected);
+            searchBtn.Enabled = d != null && !selection.IsEmpty;
             if (d == null)
             {
                 selTitle.Text = "Nothing selected";
@@ -300,8 +338,8 @@ namespace SpindleRecovery.UI
             if (d == null) return;
             var p = list.SelectedPartition;
             var m = (ScanMethod)method.SelectedIndex;
-            var types = ChosenTypes;
-            if (types.Count == 0)
+            var sel = selection;
+            if (sel.IsEmpty)
             {
                 MessageBox.Show(this, "Choose at least one kind of file to look for (Pictures, Videos, Music, Documents…).",
                     "No file types chosen", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -318,14 +356,16 @@ namespace SpindleRecovery.UI
             DeepScanOptions deep = null;
             if (m != ScanMethod.QuickScan)
             {
-                using (var dlg = new ScanOptionsDialog(d, p, types))
+                using (var dlg = new ScanOptionsDialog(d, p, sel))
                 {
                     if (dlg.ShowDialog(this) != DialogResult.OK) return;
                     deep = dlg.Options;
                 }
+                // the dialog may have refined the choice: remember it on the home screen too
+                if (!deep.Selection.FormatIds.SetEquals(sel.FormatIds)) SetSelection(deep.Selection);
+                sel = deep.Selection;
             }
-            if (deep != null) types = new HashSet<FileCategory>(deep.Categories); // the dialog may have refined the choice
-            MainForm.Instance.Scan.Start(d, p, m == ScanMethod.DeepScan ? new List<PartitionInfo>() : quickTargets, deep, types);
+            MainForm.Instance.Scan.Start(d, p, m == ScanMethod.DeepScan ? new List<PartitionInfo>() : quickTargets, deep, sel);
             MainForm.Instance.Show(MainForm.Instance.Scan);
         }
     }

@@ -14,7 +14,8 @@ namespace SpindleRecovery.UI
     {
         readonly DiskInfo disk;
         readonly PartitionInfo part;
-        readonly Dictionary<FileCategory, CheckBox> cats = new Dictionary<FileCategory, CheckBox>();
+        FileSelection selection;
+        readonly WrapLabel typesSummary = new WrapLabel();
         readonly CheckBox freeOnly = new CheckBox();
         readonly CheckBox keepCorrupted = new CheckBox();
         readonly TextBox vault = new TextBox();
@@ -23,9 +24,10 @@ namespace SpindleRecovery.UI
         public static string DefaultVaultRoot =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Spindle Recovery Vault");
 
-        public ScanOptionsDialog(DiskInfo disk, PartitionInfo part, ICollection<FileCategory> preselected = null)
+        public ScanOptionsDialog(DiskInfo disk, PartitionInfo part, FileSelection preselected = null)
         {
             this.disk = disk; this.part = part;
+            selection = preselected == null || preselected.IsEmpty ? FileSelection.All() : preselected;
             Text = "Deep Scan options";
             Font = Theme.Body;
             BackColor = Color.White;
@@ -34,7 +36,7 @@ namespace SpindleRecovery.UI
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.CenterParent;
             AutoScaleMode = AutoScaleMode.None;
-            ClientSize = new Size(Theme.S(600), Theme.S(500));
+            ClientSize = new Size(Theme.S(600), Theme.S(470));
 
             int y = Theme.S(22), x = Theme.S(28);
             var title = new Label { Text = "What should Deep Scan look for?", Font = Theme.Section, ForeColor = Theme.Text, AutoSize = true, Location = new Point(x, y) };
@@ -49,23 +51,25 @@ namespace SpindleRecovery.UI
             Controls.Add(hint);
             y += hint.Height + Theme.S(12);
 
-            int col = 0;
-            var tips = new ToolTip();
-            foreach (var c in FileTypes.DisplayOrder)
+            // the formats chosen on the home screen, with a way to change them
+            var lookFor = new Label { Text = "Looking for:", Font = Theme.BodyBold, ForeColor = Theme.Text, AutoSize = true, Location = new Point(x, y + Theme.S(2)) };
+            Controls.Add(lookFor);
+            var change = FlatButton.Create("Change…", ButtonStyle.Secondary, 100);
+            change.Height = Theme.S(30);
+            change.Location = new Point(ClientSize.Width - x - change.Width, y - Theme.S(4));
+            change.Click += (s, e) =>
             {
-                var cb = new CheckBox
-                {
-                    Text = FileTypes.DisplayName(c), AutoSize = true, Font = Theme.Body, ForeColor = Theme.Text,
-                    Checked = preselected == null || preselected.Count == 0 || preselected.Contains(c),
-                    Location = new Point(x + col * Theme.S(180), y),
-                };
-                tips.SetToolTip(cb, FileTypes.Examples(c));
-                cats[c] = cb;
-                Controls.Add(cb);
-                if (++col == 3) { col = 0; y += Theme.S(30); }
-            }
-            if (col != 0) y += Theme.S(30);
-            y += Theme.S(6);
+                using (var dlg = new FormatPickerDialog(selection))
+                    if (dlg.ShowDialog(this) == DialogResult.OK) { selection = dlg.Selection; ShowSelection(); }
+            };
+            Controls.Add(change);
+            typesSummary.Font = Theme.Body;
+            typesSummary.ForeColor = Theme.Text;
+            typesSummary.Location = new Point(x + lookFor.PreferredWidth + Theme.S(8), y + Theme.S(2));
+            typesSummary.Width = change.Left - typesSummary.Left - Theme.S(10);
+            Controls.Add(typesSummary);
+            ShowSelection();
+            y += Theme.S(50);
 
             freeOnly.Text = "Search unallocated space only (faster — finds deleted files only)";
             freeOnly.AutoSize = true; freeOnly.Location = new Point(x, y); freeOnly.ForeColor = Theme.Text;
@@ -118,10 +122,15 @@ namespace SpindleRecovery.UI
             KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) { DialogResult = DialogResult.Cancel; Close(); } };
         }
 
+        void ShowSelection()
+        {
+            var text = selection.Describe();
+            typesSummary.Text = char.ToUpperInvariant(text[0]) + text.Substring(1);
+        }
+
         void Accept()
         {
-            var chosen = new HashSet<FileCategory>(cats.Where(kv => kv.Value.Checked).Select(kv => kv.Key));
-            if (chosen.Count == 0)
+            if (selection.IsEmpty)
             {
                 MessageBox.Show(this, "Choose at least one kind of file.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
@@ -146,7 +155,8 @@ namespace SpindleRecovery.UI
             {
                 Disk = disk,
                 Partition = part,
-                Categories = chosen,
+                Selection = selection,
+                Categories = selection.Categories,
                 FreeSpaceOnly = freeOnly.Checked && part != null,
                 KeepCorrupted = keepCorrupted.Checked,
                 VaultDir = path,

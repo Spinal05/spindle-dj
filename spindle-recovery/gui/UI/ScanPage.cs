@@ -47,6 +47,7 @@ namespace SpindleRecovery.UI
         readonly HashSet<string> vaultSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         FileCategory? categoryFilter;
         HashSet<FileCategory> wanted = FileTypes.AllCategories();
+        FileSelection selection = FileSelection.All();
         int sortColumn = -1; bool sortAsc = true;
         bool viewDirty;
 
@@ -384,10 +385,11 @@ namespace SpindleRecovery.UI
 
         // ------------------------------------------------------------------ scan lifecycle
 
-        public void Start(DiskInfo disk, PartitionInfo part, List<PartitionInfo> quickTargets, DeepScanOptions deep, HashSet<FileCategory> types = null)
+        public void Start(DiskInfo disk, PartitionInfo part, List<PartitionInfo> quickTargets, DeepScanOptions deep, FileSelection sel = null)
         {
             this.disk = disk; this.part = part; this.quickTargets = quickTargets; this.deep = deep;
-            wanted = types != null && types.Count > 0 ? new HashSet<FileCategory>(types) : FileTypes.AllCategories();
+            selection = sel == null || sel.IsEmpty ? FileSelection.All() : sel;
+            wanted = selection.Categories;
             LayoutTiles();
             all.Clear(); view.Clear(); vaultSeen.Clear();
             categoryFilter = null; quickFound = 0;
@@ -400,7 +402,7 @@ namespace SpindleRecovery.UI
             HasSession = true;
             var name = part != null ? part.DisplayName + " on " + disk.Title : disk.Title;
             TitleLabel.Text = "Scanning " + name;
-            SubtitleLabel.Text = "Looking for " + FileTypes.Describe(wanted) + ". Files appear below as they are found; you can review and recover them while the scan runs.";
+            SubtitleLabel.Text = "Looking for " + selection.Describe() + ". Files appear below as they are found; you can review and recover them while the scan runs.";
             _ = RunAsync();
         }
 
@@ -413,6 +415,7 @@ namespace SpindleRecovery.UI
             all.Clear(); vaultSeen.Clear();
             all.AddRange(r.files);
             wanted = FileTypes.AllCategories();
+            selection = FileSelection.All();
             LayoutTiles();
             foreach (var f in r.files) if (f.Source == FoundSource.DeepScan) vaultSeen.Add(f.FullPath);
             categoryFilter = null;
@@ -468,7 +471,7 @@ namespace SpindleRecovery.UI
                     {
                         var files = await RecoveryService.QuickScanAsync(qp, cts.Token, f => quickProgress = f);
                         // Quick Scan lists the whole file system: keep only the file types that were asked for.
-                        files = files.Where(f => wanted.Contains(f.Category)).ToList();
+                        files = files.Where(f => selection.Includes(f)).ToList();
                         quickFound += files.Count;
                         lock (all) all.AddRange(files);
                         viewDirty = true;
@@ -531,7 +534,7 @@ namespace SpindleRecovery.UI
             if (errors.Count > 0)
                 MessageBox.Show(this, string.Join("\n\n", errors), "Some steps reported a problem", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             else if (count == 0 && !stopped)
-                MessageBox.Show(this, "No " + FileTypes.Describe(wanted) + " were found with the chosen methods." +
+                MessageBox.Show(this, "No " + selection.Describe() + " were found with the chosen methods." +
                     (deep == null ? "\n\nTry a Deep Scan, which searches every sector for file signatures." : ""),
                     "Nothing found", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
@@ -612,7 +615,7 @@ namespace SpindleRecovery.UI
             try { fresh = RecoveryService.EnumerateVault(deep.VaultDir, vaultSeen).ToList(); }
             catch { return; }
             // A PhotoRec format family can yield neighbouring types (RIFF gives AVI and WAV): keep the chosen ones.
-            fresh = fresh.Where(f => wanted.Contains(f.Category)).ToList();
+            fresh = fresh.Where(f => selection.Includes(f)).ToList();
             if (fresh.Count == 0) return;
             lock (all) all.AddRange(fresh);
             viewDirty = true;

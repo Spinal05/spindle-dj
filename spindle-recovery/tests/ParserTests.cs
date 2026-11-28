@@ -108,10 +108,13 @@ static class ParserTests
 
         Console.WriteLine("File types");
         var known = new HashSet<string>(Lines("photorec-formats.txt").Select(l => l.Trim()).Where(l => l.Length > 0));
-        var unknown = FileTypes.PhotoRecFamilies.SelectMany(kv => kv.Value).Where(f => !known.Contains(f)).Distinct().ToList();
+        var unknown = FileTypes.Formats.SelectMany(f => f.Families).Where(f => !known.Contains(f)).Distinct().ToList();
         Check(unknown.Count == 0, "every format family exists in PhotoRec 7.2" + (unknown.Count > 0 ? ": missing " + string.Join(", ", unknown) : ""));
-        Check(FileTypes.DisplayOrder.Length == Enum.GetValues(typeof(FileCategory)).Length && FileTypes.DisplayOrder.All(c => FileTypes.PhotoRecFamilies.ContainsKey(c)),
-            "every category is shown and has PhotoRec formats");
+        Check(FileTypes.DisplayOrder.Length == Enum.GetValues(typeof(FileCategory)).Length &&
+              FileTypes.DisplayOrder.All(c => FileTypes.Formats.Any(f => f.Category == c)), "every category is shown and has formats");
+        Check(FileTypes.Formats.Select(f => f.Id).Distinct().Count() == FileTypes.Formats.Length, "format ids are unique");
+        var misfiled = FileTypes.Formats.SelectMany(f => f.Extensions.Where(e => FileTypes.Categorize("x." + e) != f.Category).Select(e => f.Id + ":" + e)).ToList();
+        Check(misfiled.Count == 0, "every format's extensions belong to its category" + (misfiled.Count > 0 ? ": " + string.Join(", ", misfiled) : ""));
         Check(FileTypes.Categorize("Inbox.pst") == FileCategory.Email && FileTypes.Categorize("archive.mbox") == FileCategory.Email, "Outlook PST and MBOX are Email");
         Check(FileTypes.Categorize("Thesis.docx") == FileCategory.Documents && FileTypes.Categorize("IMG_0001.HEIC") == FileCategory.Pictures &&
               FileTypes.Categorize("clip.MTS") == FileCategory.Video && FileTypes.Categorize("song.m4a") == FileCategory.Audio, "common extensions categorised");
@@ -121,6 +124,23 @@ static class ParserTests
         Check(emailCmd.Contains("pst,enable") && emailCmd.Contains("tx?,enable") && !emailCmd.Contains("jpg,enable"), "Email-only Deep Scan enables mail formats only");
         Check(!RecoveryService.BuildPhotoRecCommand(new DeepScanOptions { Disk = cardDisk, Categories = FileTypes.AllCategories() }).Contains("fileopt"),
             "all types chosen: PhotoRec searches every format");
+
+        Console.WriteLine("Format picker selection");
+        Func<string, FoundFile> F = name => new FoundFile { Name = name, Extension = Path.GetExtension(name).TrimStart('.').ToLowerInvariant(), Category = FileTypes.Categorize(name) };
+        var photos = new FileSelection(new[] { "jpg", "heic" });
+        Check(photos.Families.SequenceEqual(new[] { "jpg", "mov" }), "JPEG + HEIC enable PhotoRec's jpg and mov families");
+        Check(photos.Includes(F("IMG_0001.JPG")) && photos.Includes(F("IMG_0002.heic")), "chosen formats are kept");
+        Check(!photos.Includes(F("logo.png")) && !photos.Includes(F("clip.mp4")) && !photos.Includes(F("notes.txt")),
+            "other formats are left out, even ones PhotoRec finds through the same family (MP4 via mov)");
+        Check(photos.Describe() == "Pictures (JPEG photos, HEIC / HEIF (iPhone))", "summary names the chosen formats: " + photos.Describe());
+        var pics = FileSelection.FromCategories(new[] { FileCategory.Pictures });
+        Check(pics.IsWholeCategory(FileCategory.Pictures) && pics.Includes(F("drawing.xcf")) && !pics.Includes(F("song.mp3")),
+            "a whole category keeps every file in it, including extensions not in the picker");
+        Check(pics.Describe() == "Pictures", "whole category summary");
+        var jpgCmd = RecoveryService.BuildPhotoRecCommand(new DeepScanOptions { Disk = cardDisk, Partition = cardDisk.Partitions[0], Selection = new FileSelection(new[] { "jpg" }) });
+        Check(jpgCmd.Contains(",disable,jpg,enable,") && !jpgCmd.Contains("png,enable"), "JPEG-only Deep Scan: " + jpgCmd);
+        Check(!RecoveryService.BuildPhotoRecCommand(new DeepScanOptions { Disk = cardDisk, Selection = FileSelection.All() }).Contains("fileopt"),
+            "everything chosen: PhotoRec searches all 480+ formats");
 
         Console.WriteLine("Argument quoting");
         Check(EngineHost.JoinArgs(new[] { "/d", @"C:\My Files\recup_dir", "/cmd", @"\\.\PhysicalDrive1", "search" })

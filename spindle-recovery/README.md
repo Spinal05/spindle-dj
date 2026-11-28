@@ -34,7 +34,9 @@ You can also attach disk images: `.img`, `.dd`, `.raw`, `.bin`, `.iso` or fixed 
 ### Using it
 
 1. **Data Recovery** lists every disk with its partitions. Select a whole disk or one partition.
-2. Under **Look for**, pick the kinds of files you want: **Pictures, Videos, Music, Documents, Email, Archives, Other files**, or **All types**. Hover a type to see the formats it covers. Fewer types make a faster Deep Scan with less to sort through. Quick Scan results are filtered to the same types, and the choice is remembered.
+2. Under **Look for**, pick the kinds of files you want: **Pictures, Videos, Music, Documents, Email, Archives, Other files**, or **All types**. Hover a type to see the formats it covers.
+   - For finer control, click **Formats…** and tick individual formats, for example only *JPEG* and *HEIC* photos, or only *Word/Excel 2007+* and *PDF*. A partly chosen type shows a count, such as "Pictures 2/11".
+   - Fewer formats make a faster Deep Scan with less to sort through. Quick Scan results are filtered to the same choice, and the choice is remembered.
 3. Choose a method: **All recovery methods** (the default), **Quick Scan** or **Deep Scan**, then **Search for lost data**.
 4. For Deep Scan, confirm the file types and pick a **recovery vault** folder. Put the vault on a *different* drive; the app warns you if you pick the drive being recovered.
 5. Results arrive while the scan runs. Filter by category tile, by status (Deleted / Existing / Reconstructed) or by name. Reconstructed photos show a preview.
