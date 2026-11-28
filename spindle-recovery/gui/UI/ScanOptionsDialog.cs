@@ -23,7 +23,7 @@ namespace SpindleRecovery.UI
         public static string DefaultVaultRoot =>
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "Spindle Recovery Vault");
 
-        public ScanOptionsDialog(DiskInfo disk, PartitionInfo part)
+        public ScanOptionsDialog(DiskInfo disk, PartitionInfo part, ICollection<FileCategory> preselected = null)
         {
             this.disk = disk; this.part = part;
             Text = "Deep Scan options";
@@ -34,7 +34,7 @@ namespace SpindleRecovery.UI
             ShowInTaskbar = false;
             StartPosition = FormStartPosition.CenterParent;
             AutoScaleMode = AutoScaleMode.None;
-            ClientSize = new Size(Theme.S(600), Theme.S(470));
+            ClientSize = new Size(Theme.S(600), Theme.S(500));
 
             int y = Theme.S(22), x = Theme.S(28);
             var title = new Label { Text = "What should Deep Scan look for?", Font = Theme.Section, ForeColor = Theme.Text, AutoSize = true, Location = new Point(x, y) };
@@ -50,18 +50,22 @@ namespace SpindleRecovery.UI
             y += hint.Height + Theme.S(12);
 
             int col = 0;
-            foreach (FileCategory c in Enum.GetValues(typeof(FileCategory)))
+            var tips = new ToolTip();
+            foreach (var c in FileTypes.DisplayOrder)
             {
                 var cb = new CheckBox
                 {
-                    Text = c.ToString(), Checked = true, AutoSize = true, Font = Theme.Body, ForeColor = Theme.Text,
+                    Text = FileTypes.DisplayName(c), AutoSize = true, Font = Theme.Body, ForeColor = Theme.Text,
+                    Checked = preselected == null || preselected.Count == 0 || preselected.Contains(c),
                     Location = new Point(x + col * Theme.S(180), y),
                 };
+                tips.SetToolTip(cb, FileTypes.Examples(c));
                 cats[c] = cb;
                 Controls.Add(cb);
                 if (++col == 3) { col = 0; y += Theme.S(30); }
             }
-            y += Theme.S(14);
+            if (col != 0) y += Theme.S(30);
+            y += Theme.S(6);
 
             freeOnly.Text = "Search unallocated space only (faster — finds deleted files only)";
             freeOnly.AutoSize = true; freeOnly.Location = new Point(x, y); freeOnly.ForeColor = Theme.Text;

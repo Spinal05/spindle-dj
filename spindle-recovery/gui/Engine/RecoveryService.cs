@@ -243,7 +243,7 @@ namespace SpindleRecovery.Engine
             parts.Add("options");
             parts.Add(o.Paranoid ? "paranoid" : "paranoid_no");
             parts.Add(o.KeepCorrupted ? "keep_corrupted_file" : "keep_corrupted_file_no");
-            if (o.Categories != null && o.Categories.Count > 0 && o.Categories.Count < Enum.GetValues(typeof(FileCategory)).Length)
+            if (o.Categories != null && o.Categories.Count > 0 && o.Categories.Count < FileTypes.DisplayOrder.Length)
             {
                 parts.Add("fileopt");
                 parts.Add("everything");

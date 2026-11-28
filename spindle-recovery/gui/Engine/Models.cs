@@ -77,7 +77,9 @@ namespace SpindleRecovery.Engine
 
     public enum FoundSource { QuickScan, DeepScan }
 
-    public enum FileCategory { Pictures, Video, Audio, Documents, Archives, Other }
+    // Values are stored in saved scans: append new categories at the end, never reorder.
+    // FileTypes.DisplayOrder controls the order shown in the UI.
+    public enum FileCategory { Pictures, Video, Audio, Documents, Archives, Other, Email }
 
     /// <summary>A file found by a scan.</summary>
     public class FoundFile

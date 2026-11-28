@@ -106,6 +106,22 @@ static class ParserTests
         opts.Partition = null; opts.Categories = null;
         Check(RecoveryService.BuildPhotoRecCommand(opts) == "partition_none,options,paranoid,keep_corrupted_file_no,wholespace,search", "whole device, every format");
 
+        Console.WriteLine("File types");
+        var known = new HashSet<string>(Lines("photorec-formats.txt").Select(l => l.Trim()).Where(l => l.Length > 0));
+        var unknown = FileTypes.PhotoRecFamilies.SelectMany(kv => kv.Value).Where(f => !known.Contains(f)).Distinct().ToList();
+        Check(unknown.Count == 0, "every format family exists in PhotoRec 7.2" + (unknown.Count > 0 ? ": missing " + string.Join(", ", unknown) : ""));
+        Check(FileTypes.DisplayOrder.Length == Enum.GetValues(typeof(FileCategory)).Length && FileTypes.DisplayOrder.All(c => FileTypes.PhotoRecFamilies.ContainsKey(c)),
+            "every category is shown and has PhotoRec formats");
+        Check(FileTypes.Categorize("Inbox.pst") == FileCategory.Email && FileTypes.Categorize("archive.mbox") == FileCategory.Email, "Outlook PST and MBOX are Email");
+        Check(FileTypes.Categorize("Thesis.docx") == FileCategory.Documents && FileTypes.Categorize("IMG_0001.HEIC") == FileCategory.Pictures &&
+              FileTypes.Categorize("clip.MTS") == FileCategory.Video && FileTypes.Categorize("song.m4a") == FileCategory.Audio, "common extensions categorised");
+        Check(FileTypes.DisplayName(FileCategory.Audio) == "Music" && FileTypes.DisplayName(FileCategory.Video) == "Videos", "friendly names");
+        Check(FileTypes.Describe(new[] { FileCategory.Video, FileCategory.Pictures }) == "Pictures, Videos", "chosen types listed in display order");
+        var emailCmd = RecoveryService.BuildPhotoRecCommand(new DeepScanOptions { Disk = cardDisk, Partition = cardDisk.Partitions[0], Categories = new HashSet<FileCategory> { FileCategory.Email } });
+        Check(emailCmd.Contains("pst,enable") && emailCmd.Contains("tx?,enable") && !emailCmd.Contains("jpg,enable"), "Email-only Deep Scan enables mail formats only");
+        Check(!RecoveryService.BuildPhotoRecCommand(new DeepScanOptions { Disk = cardDisk, Categories = FileTypes.AllCategories() }).Contains("fileopt"),
+            "all types chosen: PhotoRec searches every format");
+
         Console.WriteLine("Argument quoting");
         Check(EngineHost.JoinArgs(new[] { "/d", @"C:\My Files\recup_dir", "/cmd", @"\\.\PhysicalDrive1", "search" })
               == @"/d ""C:\My Files\recup_dir"" /cmd \\.\PhysicalDrive1 search", "paths with spaces quoted, device path untouched");

@@ -46,6 +46,7 @@ namespace SpindleRecovery.UI
         List<FoundFile> view = new List<FoundFile>();
         readonly HashSet<string> vaultSeen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         FileCategory? categoryFilter;
+        HashSet<FileCategory> wanted = FileTypes.AllCategories();
         int sortColumn = -1; bool sortAsc = true;
         bool viewDirty;
 
@@ -127,7 +128,7 @@ namespace SpindleRecovery.UI
             tiles.WrapContents = false;
             tiles.BackColor = Theme.Background;
             tiles.Padding = new Padding(0);
-            foreach (FileCategory c in Enum.GetValues(typeof(FileCategory)))
+            foreach (var c in FileTypes.DisplayOrder)
             {
                 var t = new CategoryTile(c) { Margin = new Padding(0, 0, Theme.S(12), 0) };
                 t.Click += (s, e) =>
@@ -139,14 +140,23 @@ namespace SpindleRecovery.UI
                 tileMap[c] = t;
                 tiles.Controls.Add(t);
             }
-            tiles.Resize += (s, e) =>
+            tiles.Resize += (s, e) => LayoutTiles();
+        }
+
+        /// <summary>Shows one tile per chosen file type, sharing the row's width.</summary>
+        void LayoutTiles()
+        {
+            var shown = FileTypes.DisplayOrder.Where(c => wanted.Contains(c)).Select(c => tileMap[c]).ToList();
+            foreach (var kv in tileMap) kv.Value.Visible = wanted.Contains(kv.Key);
+            if (shown.Count == 0) return;
+            int gap = Theme.S(12);
+            int w = (tiles.ClientSize.Width - gap * (shown.Count - 1)) / shown.Count;
+            w = Math.Max(Theme.S(110), Math.Min(Theme.S(260), w));
+            for (int i = 0; i < shown.Count; i++)
             {
-                int n = tileMap.Count;
-                int w = (tiles.Width - Theme.S(12) * (n - 1)) / n;
-                w = Math.Max(Theme.S(120), w);
-                foreach (var t in tileMap.Values) t.Width = w;
-                if (tileMap.Count > 0) tileMap[FileCategory.Other].Margin = new Padding(0);
-            };
+                shown[i].Width = w;
+                shown[i].Margin = new Padding(0, 0, i == shown.Count - 1 ? 0 : gap, 0);
+            }
         }
 
         void BuildResults()
@@ -374,9 +384,11 @@ namespace SpindleRecovery.UI
 
         // ------------------------------------------------------------------ scan lifecycle
 
-        public void Start(DiskInfo disk, PartitionInfo part, List<PartitionInfo> quickTargets, DeepScanOptions deep)
+        public void Start(DiskInfo disk, PartitionInfo part, List<PartitionInfo> quickTargets, DeepScanOptions deep, HashSet<FileCategory> types = null)
         {
             this.disk = disk; this.part = part; this.quickTargets = quickTargets; this.deep = deep;
+            wanted = types != null && types.Count > 0 ? new HashSet<FileCategory>(types) : FileTypes.AllCategories();
+            LayoutTiles();
             all.Clear(); view.Clear(); vaultSeen.Clear();
             categoryFilter = null; quickFound = 0;
             foreach (var t in tileMap.Values) { t.Count = 0; t.Bytes = 0; t.Selected = false; t.Invalidate(); }
@@ -388,7 +400,7 @@ namespace SpindleRecovery.UI
             HasSession = true;
             var name = part != null ? part.DisplayName + " on " + disk.Title : disk.Title;
             TitleLabel.Text = "Scanning " + name;
-            SubtitleLabel.Text = "Files appear below as they are found. You can review and recover them while the scan runs.";
+            SubtitleLabel.Text = "Looking for " + FileTypes.Describe(wanted) + ". Files appear below as they are found; you can review and recover them while the scan runs.";
             _ = RunAsync();
         }
 
@@ -400,6 +412,8 @@ namespace SpindleRecovery.UI
             deep = r.vault != null ? new DeepScanOptions { Disk = r.disk, Partition = r.scanned, VaultDir = r.vault } : null;
             all.Clear(); vaultSeen.Clear();
             all.AddRange(r.files);
+            wanted = FileTypes.AllCategories();
+            LayoutTiles();
             foreach (var f in r.files) if (f.Source == FoundSource.DeepScan) vaultSeen.Add(f.FullPath);
             categoryFilter = null;
             foreach (var t in tileMap.Values) { t.Selected = false; t.Invalidate(); }
@@ -453,6 +467,8 @@ namespace SpindleRecovery.UI
                     try
                     {
                         var files = await RecoveryService.QuickScanAsync(qp, cts.Token, f => quickProgress = f);
+                        // Quick Scan lists the whole file system: keep only the file types that were asked for.
+                        files = files.Where(f => wanted.Contains(f.Category)).ToList();
                         quickFound += files.Count;
                         lock (all) all.AddRange(files);
                         viewDirty = true;
@@ -515,7 +531,7 @@ namespace SpindleRecovery.UI
             if (errors.Count > 0)
                 MessageBox.Show(this, string.Join("\n\n", errors), "Some steps reported a problem", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             else if (count == 0 && !stopped)
-                MessageBox.Show(this, "No recoverable files were found with the chosen methods." +
+                MessageBox.Show(this, "No " + FileTypes.Describe(wanted) + " were found with the chosen methods." +
                     (deep == null ? "\n\nTry a Deep Scan, which searches every sector for file signatures." : ""),
                     "Nothing found", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
@@ -595,6 +611,8 @@ namespace SpindleRecovery.UI
             List<FoundFile> fresh;
             try { fresh = RecoveryService.EnumerateVault(deep.VaultDir, vaultSeen).ToList(); }
             catch { return; }
+            // A PhotoRec format family can yield neighbouring types (RIFF gives AVI and WAV): keep the chosen ones.
+            fresh = fresh.Where(f => wanted.Contains(f.Category)).ToList();
             if (fresh.Count == 0) return;
             lock (all) all.AddRange(fresh);
             viewDirty = true;

@@ -38,6 +38,7 @@ namespace SpindleRecovery.UI
             Color.FromArgb(37, 99, 235),   // Documents
             Color.FromArgb(16, 185, 129),  // Archives
             Color.FromArgb(100, 116, 139), // Other
+            Color.FromArgb(14, 165, 233),  // Email
         };
 
         public static float Scale = 1f;

@@ -8,7 +8,7 @@ namespace SpindleRecovery.UI
     /// <summary>Simple vector icons drawn with GDI+ (no bitmap assets needed).</summary>
     public static class Icons
     {
-        public enum Kind { Recover, Partition, Backup, Vault, About, HardDisk, Usb, Volume, Image, Partition2, Pictures, Video, Audio, Documents, Archives, Other, Search, Folder, Check, Shield }
+        public enum Kind { Recover, Partition, Backup, Vault, About, HardDisk, Usb, Volume, Image, Partition2, Pictures, Video, Audio, Documents, Archives, Other, Email, Search, Folder, Check, Shield }
 
         public static void Draw(Graphics g, Kind kind, RectangleF r, Color color)
         {
@@ -119,6 +119,10 @@ namespace SpindleRecovery.UI
                         }
                         g.DrawLines(pen, new[] { P(0.60f, 0.08f), P(0.60f, 0.28f), P(0.80f, 0.28f) });
                         break;
+                    case Kind.Email:
+                        using (var path = Theme.RoundRect(R(0.10f, 0.22f, 0.80f, 0.56f), s * 0.06f)) g.DrawPath(pen, path);
+                        g.DrawLines(pen, new[] { P(0.12f, 0.26f), P(0.5f, 0.56f), P(0.88f, 0.26f) });
+                        break;
                     case Kind.Search:
                         g.DrawEllipse(pen, R(0.12f, 0.12f, 0.52f, 0.52f));
                         g.DrawLine(pen, P(0.58f, 0.58f), P(0.88f, 0.88f));
@@ -149,6 +153,7 @@ namespace SpindleRecovery.UI
                 case FileCategory.Audio: return Kind.Audio;
                 case FileCategory.Documents: return Kind.Documents;
                 case FileCategory.Archives: return Kind.Archives;
+                case FileCategory.Email: return Kind.Email;
                 default: return Kind.Other;
             }
         }

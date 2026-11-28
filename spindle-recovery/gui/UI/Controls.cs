@@ -234,12 +234,81 @@ namespace SpindleRecovery.UI
             float tx = Theme.S(66);
             float maxW = Width - tx - Theme.S(8);
             using (var b = new SolidBrush(Theme.Text))
-                g.DrawString(DeviceList.Ellipsis(g, Category.ToString(), Theme.BodyBold, maxW), Theme.BodyBold, b, tx, Height / 2f - Theme.S(20));
+                g.DrawString(DeviceList.Ellipsis(g, FileTypes.DisplayName(Category), Theme.BodyBold, maxW), Theme.BodyBold, b, tx, Height / 2f - Theme.S(20));
             using (var b = new SolidBrush(Theme.TextMuted))
             {
                 g.DrawString(DeviceList.Ellipsis(g, $"{Count:N0} files", Theme.Small, maxW), Theme.Small, b, tx, Height / 2f + Theme.S(1));
                 if (Height > Theme.S(70))
                     g.DrawString(DeviceList.Ellipsis(g, FileTypes.FormatSize(Bytes), Theme.Small, maxW), Theme.Small, b, tx, Height / 2f + Theme.S(17));
+            }
+        }
+    }
+
+    /// <summary>A rounded, toggleable pill used to pick file types.</summary>
+    public class ChipToggle : Control
+    {
+        bool selected, hover;
+        public Color Accent = Theme.Accent;
+        public Icons.Kind? Icon;
+        public event EventHandler SelectedChanged;
+
+        public bool Selected
+        {
+            get => selected;
+            set { if (selected == value) return; selected = value; Invalidate(); SelectedChanged?.Invoke(this, EventArgs.Empty); }
+        }
+
+        public ChipToggle(string text, Icons.Kind? icon, Color accent)
+        {
+            SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.UserPaint |
+                     ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+            Text = text; Icon = icon; Accent = accent;
+            Font = Theme.Font(9f, FontStyle.Bold);
+            Cursor = Cursors.Hand;
+            Height = Theme.S(32);
+            using (var g = CreateGraphics())
+                Width = (int)Math.Ceiling(g.MeasureString(text, Font).Width) + Theme.S(icon.HasValue ? 56 : 34);
+            TabStop = true;
+        }
+
+        protected override void OnClick(EventArgs e) { Focus(); Selected = !Selected; base.OnClick(e); }
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Space || e.KeyCode == Keys.Enter) { Selected = !Selected; e.Handled = true; }
+            base.OnKeyDown(e);
+        }
+        protected override void OnMouseEnter(EventArgs e) { hover = true; Invalidate(); base.OnMouseEnter(e); }
+        protected override void OnMouseLeave(EventArgs e) { hover = false; Invalidate(); base.OnMouseLeave(e); }
+        protected override void OnGotFocus(EventArgs e) { Invalidate(); base.OnGotFocus(e); }
+        protected override void OnLostFocus(EventArgs e) { Invalidate(); base.OnLostFocus(e); }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            Theme.HighQuality(g);
+            g.Clear(Parent?.BackColor ?? Color.White);
+            var r = new RectangleF(0.75f, 0.75f, Width - 2f, Height - 2f);
+            using (var path = Theme.RoundRect(r, Height / 2f))
+            {
+                using (var b = new SolidBrush(selected ? Color.FromArgb(28, Accent) : hover ? Color.FromArgb(246, 248, 252) : Color.White)) g.FillPath(b, path);
+                using (var p = new Pen(selected ? Accent : Focused ? Theme.Accent : Theme.Border, selected ? 1.6f : 1f)) g.DrawPath(p, path);
+            }
+            float x = Theme.S(12f);
+            var fg = selected ? Accent : Theme.TextMuted;
+            if (selected)
+            {
+                Icons.Draw(g, Icons.Kind.Check, new RectangleF(x, (Height - Theme.S(14f)) / 2, Theme.S(14f), Theme.S(14f)), Accent);
+                x += Theme.S(18f);
+            }
+            else if (Icon.HasValue)
+            {
+                Icons.Draw(g, Icon.Value, new RectangleF(x, (Height - Theme.S(16f)) / 2, Theme.S(16f), Theme.S(16f)), Theme.TextFaint);
+                x += Theme.S(20f);
+            }
+            using (var b = new SolidBrush(selected ? Theme.Text : fg))
+            {
+                var sz = g.MeasureString(Text, Font);
+                g.DrawString(Text, Font, b, x, (Height - sz.Height) / 2 + 0.5f);
             }
         }
     }
