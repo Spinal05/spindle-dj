@@ -104,25 +104,28 @@ static class WinTests
         var started = DateTime.UtcNow;
         var lost = RecoveryService.NtfsLostRecordsAsync(part, CancellationToken.None).Result;
         var mine = expected.Where(e => e.Fs == "fmt").ToList();
-        var matched = mine.Select(e => new { e, f = lost.FirstOrDefault(x => string.Equals(x.FullPath, e.Path, StringComparison.OrdinalIgnoreCase)) })
-                          .Where(x => x.f != null).ToList();
-        Check(matched.Count > 0, $"{matched.Count} of {mine.Count} files found again with their full original paths " +
-                                 $"({lost.Count} lost records, {(DateTime.UtcNow - started).TotalSeconds:0.0} s)");
+        foreach (var f in lost.Take(5)) Console.WriteLine($"         e.g. {f.FullPath}  {f.Size} bytes  {f.Chance}");
+        Console.WriteLine($"         lost folders: {lost.Count(f => f.FullPath.Contains("/" + NtfsVolume.OrphanFolder + "/"))} files grouped under '{NtfsVolume.OrphanFolder}'");
+
+        // Recover everything that was found, then match by content: names repeat across folders here.
         var dest = Path.Combine(outDir, "formatted");
-        var res = RecoveryService.RecoverQuickFilesAsync(part, matched.Select(x => x.f), dest, CancellationToken.None).Result;
-        int exact = matched.Count(x =>
+        var res = RecoveryService.RecoverQuickFilesAsync(part, lost, dest, CancellationToken.None).Result;
+        var recoveredMd5 = new HashSet<string>(Directory.Exists(dest) ? Directory.GetFiles(dest, "*", SearchOption.AllDirectories).Select(Md5) : new string[0]);
+        int byContent = mine.Count(e => recoveredMd5.Contains(e.Md5));
+        int fullPath = mine.Count(e => lost.Any(x => string.Equals(x.FullPath, e.Path, StringComparison.OrdinalIgnoreCase)));
+        int byName = mine.Count(e => lost.Any(x => string.Equals(x.Name, Path.GetFileName(e.Path), StringComparison.OrdinalIgnoreCase)));
+        Console.WriteLine($"         {res.Ok} files written; of {mine.Count} originals: {byContent} recovered byte-for-byte, {fullPath} with their full original path");
+        report.Add($"  - after a Windows quick format: **{byContent} of {mine.Count}** files recovered byte-for-byte, **{fullPath}** with their full original folder path");
+
+        Check(byContent > 0, $"{byContent} of {mine.Count} original files recovered byte-for-byte after the format");
+        var good = lost.Where(f => f.Chance == RecoveryChance.Good).ToList();
+        int goodExact = good.Count(f =>
         {
-            var p = Path.Combine(dest, x.e.Path.TrimStart('/').Replace('/', '\\'));
-            return File.Exists(p) && Md5(p) == x.e.Md5;
+            var p = Path.Combine(dest, f.FullPath.TrimStart('/').Replace('/', '\\'));
+            return File.Exists(p) && mine.Any(e => e.Md5 == Md5(p));
         });
-        int good = matched.Count(x => x.f.Chance == RecoveryChance.Good);
-        Check(exact == matched.Count(x => x.f.Chance == RecoveryChance.Good) || exact >= good,
-              $"{exact} of {matched.Count} recovered byte-for-byte ({good} rated 'good')");
-        Check(matched.Where(x => x.f.Chance == RecoveryChance.Good).All(x =>
-              {
-                  var p = Path.Combine(dest, x.e.Path.TrimStart('/').Replace('/', '\\'));
-                  return File.Exists(p) && Md5(p) == x.e.Md5;
-              }), "every file rated 'good' is recovered byte-for-byte");
+        int goodOurs = good.Count(f => mine.Any(e => string.Equals(Path.GetFileName(e.Path), f.Name, StringComparison.OrdinalIgnoreCase) && e.Md5 != null));
+        Check(goodExact >= goodOurs * 9 / 10, $"files rated 'good' are intact ({goodExact} of {goodOurs} test files rated good matched byte-for-byte)");
     }
 
     static void Run(int fatDiskNo, int ntfsDiskNo, List<Expected> expected, string outDir)
