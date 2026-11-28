@@ -8,7 +8,7 @@ using SpindleRecovery.Engine;
 
 namespace SpindleRecovery.UI
 {
-    public enum ScanMethod { AllMethods, QuickScan, DeepScan }
+    public enum ScanMethod { AllMethods, QuickScan, DeepScan, LostFolders }
 
     /// <summary>Home screen: pick a disk, partition or image and start searching.</summary>
     public class DevicesPage : PageBase
@@ -75,9 +75,9 @@ namespace SpindleRecovery.UI
 
             method.DropDownStyle = ComboBoxStyle.DropDownList;
             method.Font = Theme.Body;
-            method.Width = Theme.S(220);
+            method.Width = Theme.S(270);
             method.FlatStyle = FlatStyle.System;
-            method.Items.AddRange(new object[] { "All recovery methods", "Quick Scan (file system)", "Deep Scan (file signatures)" });
+            method.Items.AddRange(new object[] { "All recovery methods", "Quick Scan (file system)", "Deep Scan (file signatures)", "Rebuild lost folders (formatted NTFS)" });
             method.SelectedIndex = 0;
 
             BuildTypeChips();
@@ -321,7 +321,9 @@ namespace SpindleRecovery.UI
             {
                 selTitle.Text = p.DisplayName + "  —  " + FileTypes.FormatSize(p.SizeBytes);
                 selInfo.Text = $"{p.FileSystem} partition on {d.Title}" +
-                    (p.SupportsQuickScan ? "  ·  Quick Scan + Deep Scan available" : "  ·  Deep Scan (file signatures)");
+                    (p.IsNtfs ? "  ·  Quick Scan, folder rebuild and Deep Scan available"
+                               : p.SupportsQuickScan ? "  ·  Quick Scan + Deep Scan available"
+                               : "  ·  Deep Scan; folder rebuild if this was an NTFS partition");
             }
             else
             {
@@ -353,8 +355,24 @@ namespace SpindleRecovery.UI
                     "Quick Scan not available", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 return;
             }
+            // Folder rebuild reads every sector of a partition looking for old NTFS file records.
+            // "All recovery methods" runs it on NTFS partitions; choosing it explicitly also covers
+            // partitions whose file system is not recognised any more (RAW).
+            var parts = p != null ? new List<PartitionInfo> { p } : d.Partitions.Where(x => x.Status != 'E').ToList();
+            var lostTargets = m == ScanMethod.LostFolders ? parts.Where(x => x.IsNtfs || !x.IsFat).ToList()
+                            : m == ScanMethod.AllMethods ? parts.Where(x => x.IsNtfs).ToList()
+                            : new List<PartitionInfo>();
+            if (m == ScanMethod.LostFolders && lostTargets.Count == 0)
+            {
+                MessageBox.Show(this, "Rebuilding lost folders works on NTFS partitions (and partitions that have become RAW).\n\n" +
+                    (d.Partitions.Count == 0
+                        ? "This disk has no partition table. Use Partition Recovery to find the lost partition first, or use Deep Scan."
+                        : "This selection has no such partition; use Quick Scan or Deep Scan instead."),
+                    "Folder rebuild not available", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
             DeepScanOptions deep = null;
-            if (m != ScanMethod.QuickScan)
+            if (m == ScanMethod.AllMethods || m == ScanMethod.DeepScan)
             {
                 using (var dlg = new ScanOptionsDialog(d, p, sel))
                 {
@@ -365,7 +383,8 @@ namespace SpindleRecovery.UI
                 if (!deep.Selection.FormatIds.SetEquals(sel.FormatIds)) SetSelection(deep.Selection);
                 sel = deep.Selection;
             }
-            MainForm.Instance.Scan.Start(d, p, m == ScanMethod.DeepScan ? new List<PartitionInfo>() : quickTargets, deep, sel);
+            var quick = m == ScanMethod.AllMethods || m == ScanMethod.QuickScan ? quickTargets : new List<PartitionInfo>();
+            MainForm.Instance.Scan.Start(d, p, quick, deep, sel, lostTargets);
             MainForm.Instance.Show(MainForm.Instance.Scan);
         }
     }

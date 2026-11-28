@@ -20,6 +20,7 @@ Pick a drive, press **Search for lost data**, tick the files you want back and p
 | Tool | Engine | What it's for |
 |---|---|---|
 | **Quick Scan** | TestDisk (FAT/exFAT) + built-in NTFS reader | Lists deleted files **with their original names and folders**. On NTFS it reads the Master File Table directly, keeps files whose folder was also deleted, rates each file's **recovery chance** (good / partly overwritten / overwritten) from the free-space map, and **previews pictures before recovery**. It never writes to the source. |
+| **Folder rebuild** (formatted NTFS) | built-in NTFS reader | Searches every sector of an NTFS partition for old file records left behind by a **quick format**, or by a damaged **RAW** volume, and rebuilds the **original folder tree and file names** from them. It uses the backup boot sector if the main one is damaged, and works out the cluster size itself if both are gone. Files whose folder record is gone appear under `Lost folders\Folder #N`. |
 | **Deep Scan** | PhotoRec | Ignores the file system and rebuilds 480+ file formats (photos, RAW, video, audio, Office, PDF, archives…) from their content signatures. Works on formatted, corrupted, NTFS, exFAT, ext4, HFS+ and unknown file systems. |
 | **Partition Recovery** | TestDisk | Finds lost or deleted partitions (quick analysis + deeper search), shows them next to the current table and rewrites the partition table. It backs up the old table first and asks for confirmation. |
 | **Byte-to-byte Backup** | built-in | Images a failing disk or partition to an `.img` file. Unreadable sectors are retried one at a time and zero-filled. You can then scan the image instead of the dying drive. |
@@ -37,9 +38,13 @@ You can also attach disk images: `.img`, `.dd`, `.raw`, `.bin`, `.iso` or fixed 
 2. Under **Look for**, pick the kinds of files you want: **Pictures, Videos, Music, Documents, Email, Archives, Other files**, or **All types**. Hover a type to see the formats it covers.
    - For finer control, click **Formats…** and tick individual formats, for example only *JPEG* and *HEIC* photos, or only *Word/Excel 2007+* and *PDF*. A partly chosen type shows a count, such as "Pictures 2/11".
    - Fewer formats make a faster Deep Scan with less to sort through. Quick Scan results are filtered to the same choice, and the choice is remembered.
-3. Choose a method: **All recovery methods** (the default), **Quick Scan** or **Deep Scan**, then **Search for lost data**.
+3. Choose a method, then **Search for lost data**:
+   - **All recovery methods** (the default): Quick Scan, then folder rebuild on NTFS partitions, then Deep Scan.
+   - **Quick Scan**: fast; deleted files with their names and folders.
+   - **Deep Scan**: rebuilds files from their contents; works on any file system.
+   - **Rebuild lost folders (formatted NTFS)**: for a drive that was quick-formatted or has turned RAW.
 4. For Deep Scan, confirm the file types and pick a **recovery vault** folder. Put the vault on a *different* drive; the app warns you if you pick the drive being recovered.
-5. Results arrive while the scan runs. Filter by category tile, by status (Deleted / Existing / Reconstructed) or by name. Reconstructed photos show a preview.
+5. Results arrive while the scan runs. Browse them in the **folder tree** (each partition's original folders, plus reconstructed files by type), or filter by category tile, by status (Deleted / Existing / Reconstructed / Lost after format) or by name. Pictures show a preview, even before recovery on NTFS.
 6. Tick files and press **Recover**. Quick Scan files keep their folder structure; Deep Scan files are grouped by type.
 
 Every scan is saved when it ends. **Saved scans…** reopens the results later without scanning again. Logs for every engine run are kept in `%LOCALAPPDATA%\SpindleRecovery\sessions`.

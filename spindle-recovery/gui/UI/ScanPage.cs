@@ -54,6 +54,15 @@ namespace SpindleRecovery.UI
         DiskInfo disk; PartitionInfo part;
         DeepScanOptions deep;
         List<PartitionInfo> quickTargets;
+        List<PartitionInfo> lostTargets = new List<PartitionInfo>();
+        // folder tree
+        readonly Panel folderPanel = new Panel();
+        readonly TreeView folderTree = new TreeView();
+        readonly CheckBox folderToggle = new CheckBox();
+        string folderFilter;          // selected tree key (prefix); null = everything
+        bool rebuildingTree;
+        const char KeySep = '\u001f';
+        int lostFound;
         CancellationTokenSource cts;
         string stopFile;
         volatile DeepScanProgress lastProgress;
@@ -178,7 +187,7 @@ namespace SpindleRecovery.UI
                 UpdateSelectionLabel();
             };
             sourceFilter.DropDownStyle = ComboBoxStyle.DropDownList;
-            sourceFilter.Items.AddRange(new object[] { "All found files", "Deleted or lost", "Existing files", "Reconstructed (Deep Scan)" });
+            sourceFilter.Items.AddRange(new object[] { "All found files", "Deleted or lost", "Existing files", "Reconstructed (Deep Scan)", "Lost after format (rebuilt folders)" });
             sourceFilter.SelectedIndex = 0;
             sourceFilter.Width = Theme.S(210);
             sourceFilter.Location = new Point(Theme.S(130), Theme.S(12));
@@ -187,7 +196,13 @@ namespace SpindleRecovery.UI
             search.Font = Theme.Body;
             SetCue(search, "Search file names");
             search.TextChanged += (s, e) => RebuildView();
-            bar.Controls.AddRange(new Control[] { selectAll, sourceFilter, search });
+            folderToggle.Text = "Folders";
+            folderToggle.AutoSize = true;
+            folderToggle.Checked = true;
+            folderToggle.BackColor = Color.White;
+            folderToggle.Location = new Point(Theme.S(354), Theme.S(16));
+            folderToggle.CheckedChanged += (s, e) => { folderPanel.Visible = folderToggle.Checked; if (!folderToggle.Checked) { folderFilter = null; RebuildView(); } SizeColumns(); };
+            bar.Controls.AddRange(new Control[] { selectAll, sourceFilter, folderToggle, search });
             bar.Resize += (s, e) => search.Location = new Point(bar.Width - search.Width - Theme.S(16), Theme.S(13));
             var sep = new Panel { Dock = DockStyle.Top, Height = 1, BackColor = Theme.Border };
 
@@ -215,8 +230,10 @@ namespace SpindleRecovery.UI
 
             BuildGrid();
 
+            BuildFolderTree();
             inner.Controls.Add(grid);
             inner.Controls.Add(preview);
+            inner.Controls.Add(folderPanel);
             inner.Controls.Add(sep);
             inner.Controls.Add(bar);
         }
@@ -283,7 +300,7 @@ namespace SpindleRecovery.UI
                     case 3: e.Value = FileTypes.FormatSize(f.Size); break;
                     case 4: e.Value = f.Modified?.ToString("g") ?? ""; break;
                     case 5: e.Value = f.StatusText; break;
-                    case 6: e.Value = f.Source == FoundSource.QuickScan ? (f.Partition?.DisplayName + " " + f.Folder) : f.Folder; break;
+                    case 6: e.Value = f.Source != FoundSource.DeepScan ? (f.Partition?.DisplayName + " " + f.Folder) : f.Folder; break;
                 }
             };
             grid.CellValuePushed += (s, e) =>
@@ -337,14 +354,120 @@ namespace SpindleRecovery.UI
 
         void SizeColumns()
         {
-            // Name and Location share whatever the fixed-width columns leave over (60/40).
             int avail = grid.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 2;
+            // When space is tight (folder tree and preview open), drop the columns the tree makes redundant.
+            bool narrow = avail < Theme.S(760);
+            grid.Columns["Location"].Visible = !narrow;
+            grid.Columns["Type"].Visible = avail >= Theme.S(600);
+            grid.Columns["Date modified"].Visible = avail >= Theme.S(520);
             int fixedW = 0;
-            foreach (DataGridViewColumn c in grid.Columns) if (c.Name != "Name" && c.Name != "Location") fixedW += c.Width;
-            int rest = Math.Max(Theme.S(200), avail - fixedW);
+            foreach (DataGridViewColumn c in grid.Columns) if (c.Visible && c.Name != "Name" && c.Name != "Location") fixedW += c.Width;
+            int rest = Math.Max(Theme.S(160), avail - fixedW);
+            if (narrow) { grid.Columns["Name"].Width = rest; return; }
+            // Name and Location share whatever the fixed-width columns leave over (60/40).
             grid.Columns["Name"].Width = rest * 6 / 10;
             grid.Columns["Location"].Width = rest - grid.Columns["Name"].Width;
         }
+
+        // ------------------------------------------------------------------ folder tree
+
+        void BuildFolderTree()
+        {
+            folderPanel.Dock = DockStyle.Left;
+            folderPanel.Width = Theme.S(220);
+            folderPanel.BackColor = Color.FromArgb(250, 251, 253);
+            var title = new Label
+            {
+                Text = "FOLDERS", Dock = DockStyle.Top, Height = Theme.S(30), Font = Theme.Font(8f, FontStyle.Bold),
+                ForeColor = Theme.TextFaint, Padding = new Padding(Theme.S(12), Theme.S(10), 0, 0), BackColor = folderPanel.BackColor,
+            };
+            var line = new Panel { Dock = DockStyle.Right, Width = 1, BackColor = Theme.Border };
+            folderTree.Dock = DockStyle.Fill;
+            folderTree.BorderStyle = BorderStyle.None;
+            folderTree.BackColor = folderPanel.BackColor;
+            folderTree.Font = Theme.Font(9f);
+            folderTree.ItemHeight = Theme.S(24);
+            folderTree.ShowLines = false;
+            folderTree.HideSelection = false;
+            folderTree.FullRowSelect = true;
+            folderTree.AfterSelect += (s, e) =>
+            {
+                if (rebuildingTree) return;
+                folderFilter = e.Node?.Tag as string;
+                RebuildView();
+            };
+            folderPanel.Controls.Add(folderTree);
+            folderPanel.Controls.Add(line);
+            folderPanel.Controls.Add(title);
+        }
+
+        /// <summary>Where a file sits in the folder tree: partition, then its original folders; or "Reconstructed files" by type.</summary>
+        static List<string> TreePath(FoundFile f)
+        {
+            var segs = new List<string>();
+            if (f.Source == FoundSource.DeepScan)
+            {
+                segs.Add("Reconstructed files");
+                segs.Add(string.IsNullOrEmpty(f.Extension) ? "(no extension)" : f.Extension.ToUpperInvariant());
+                return segs;
+            }
+            var root = f.Partition?.DisplayName ?? "File system";
+            segs.Add(f.Source == FoundSource.LostRecords ? root + " · rebuilt" : root);
+            foreach (var part in (f.Folder ?? "").Split(new[] { '/' }, StringSplitOptions.RemoveEmptyEntries)) segs.Add(part);
+            return segs;
+        }
+
+        static string KeyOf(IEnumerable<string> segs) => string.Join(KeySep.ToString(), segs) + KeySep;
+
+        class TreeCount { public int Files; public SortedDictionary<string, TreeCount> Children = new SortedDictionary<string, TreeCount>(StringComparer.CurrentCultureIgnoreCase); }
+
+        void RebuildTree()
+        {
+            var rootCount = new TreeCount();
+            lock (all)
+                foreach (var f in all)
+                {
+                    var node = rootCount;
+                    node.Files++;
+                    foreach (var seg in TreePath(f))
+                    {
+                        if (!node.Children.TryGetValue(seg, out var child)) node.Children[seg] = child = new TreeCount();
+                        child.Files++;
+                        node = child;
+                    }
+                }
+            var expanded = new HashSet<string>();
+            void Collect(TreeNodeCollection nodes) { foreach (TreeNode n in nodes) { if (n.IsExpanded) expanded.Add(n.Tag as string ?? ""); Collect(n.Nodes); } }
+            Collect(folderTree.Nodes);
+            bool first = folderTree.Nodes.Count == 0;
+
+            rebuildingTree = true;
+            folderTree.BeginUpdate();
+            folderTree.Nodes.Clear();
+            var top = new TreeNode($"All found files ({rootCount.Files:N0})") { Tag = null };
+            folderTree.Nodes.Add(top);
+            TreeNode selected = folderFilter == null ? top : null;
+            void Add(TreeNodeCollection into, TreeCount count, List<string> path, int depth)
+            {
+                foreach (var kv in count.Children)
+                {
+                    var p = new List<string>(path) { kv.Key };
+                    var key = KeyOf(p);
+                    var n = new TreeNode($"{kv.Key} ({kv.Value.Files:N0})") { Tag = key };
+                    into.Add(n);
+                    if (key == folderFilter) selected = n;
+                    Add(n.Nodes, kv.Value, p, depth + 1);
+                    if (expanded.Contains(key) || (first && depth < 2)) n.Expand();
+                }
+            }
+            Add(top.Nodes, rootCount, new List<string>(), 0);
+            top.Expand();
+            folderTree.SelectedNode = selected ?? top;
+            if (selected == null) folderFilter = null;
+            folderTree.EndUpdate();
+            rebuildingTree = false;
+        }
+
 
         static Color StatusColor(FoundFile f)
         {
@@ -385,9 +508,14 @@ namespace SpindleRecovery.UI
 
         // ------------------------------------------------------------------ scan lifecycle
 
-        public void Start(DiskInfo disk, PartitionInfo part, List<PartitionInfo> quickTargets, DeepScanOptions deep, FileSelection sel = null)
+        public void Start(DiskInfo disk, PartitionInfo part, List<PartitionInfo> quickTargets, DeepScanOptions deep, FileSelection sel = null,
+                          List<PartitionInfo> lostTargets = null)
         {
             this.disk = disk; this.part = part; this.quickTargets = quickTargets; this.deep = deep;
+            this.lostTargets = lostTargets ?? new List<PartitionInfo>();
+            folderFilter = null;
+            folderTree.Nodes.Clear();
+            lostFound = 0;
             selection = sel == null || sel.IsEmpty ? FileSelection.All() : sel;
             wanted = selection.Categories;
             LayoutTiles();
@@ -410,12 +538,15 @@ namespace SpindleRecovery.UI
         public void LoadSaved(string id)
         {
             var r = ScanStore.Load(id);
-            disk = r.disk; part = r.scanned; quickTargets = new List<PartitionInfo>();
+            disk = r.disk; part = r.scanned; quickTargets = new List<PartitionInfo>(); lostTargets = new List<PartitionInfo>();
             deep = r.vault != null ? new DeepScanOptions { Disk = r.disk, Partition = r.scanned, VaultDir = r.vault } : null;
             all.Clear(); vaultSeen.Clear();
             all.AddRange(r.files);
             wanted = FileTypes.AllCategories();
             selection = FileSelection.All();
+            folderFilter = null;
+            folderTree.Nodes.Clear();
+            RebuildTree();
             LayoutTiles();
             foreach (var f in r.files) if (f.Source == FoundSource.DeepScan) vaultSeen.Add(f.FullPath);
             categoryFilter = null;
@@ -435,7 +566,7 @@ namespace SpindleRecovery.UI
             percentLabel.Text = "";
             progress.Indeterminate = false;
             progress.Value = r.raw.Stopped ? 0 : 1;
-            detailLabel.Text = $"{r.files.Count(f => f.Source == FoundSource.QuickScan):N0} files from the file system · " +
+            detailLabel.Text = $"{r.files.Count(f => f.Source != FoundSource.DeepScan):N0} files with their names and folders · " +
                                $"{r.files.Count(f => f.Source == FoundSource.DeepScan):N0} reconstructed" + (r.vault != null ? " in " + r.vault : "");
             UpdateTiles();
             RebuildView();
@@ -482,6 +613,35 @@ namespace SpindleRecovery.UI
                 }
                 progress.Indeterminate = false;
 
+                // Rebuild folders from old NTFS file records (after a format, or on a RAW volume)
+                int li = 0;
+                foreach (var lp in lostTargets)
+                {
+                    if (cts.IsCancellationRequested) break;
+                    li++;
+                    phaseLabel.Text = $"Rebuilding lost folders on {lp.DisplayName}";
+                    detailLabel.Text = (lostTargets.Count > 1 ? $"Partition {li} of {lostTargets.Count} · " : "") +
+                                       "Searching every sector for old NTFS file records (names, folders and file locations)";
+                    progress.Value = 0;
+                    percentLabel.Text = "";
+                    quickProgress = -1;
+                    quickRunning = true;
+                    try
+                    {
+                        var files = await RecoveryService.NtfsLostRecordsAsync(lp, cts.Token, f => quickProgress = f);
+                        // skip files Quick Scan already listed from the current file system
+                        HashSet<string> known;
+                        lock (all) known = new HashSet<string>(all.Where(f => f.Partition == lp && f.Source == FoundSource.QuickScan).Select(f => f.FullPath + "|" + f.Size));
+                        files = files.Where(f => selection.Includes(f) && !known.Contains(f.FullPath + "|" + f.Size)).ToList();
+                        lostFound += files.Count;
+                        lock (all) all.AddRange(files);
+                        viewDirty = true;
+                    }
+                    catch (OperationCanceledException) { stopped = true; }
+                    catch (Exception ex) { errors.Add("Folder rebuild of " + lp.DisplayName + ": " + ex.Message); }
+                    quickRunning = false;
+                }
+
                 if (deep != null && !cts.IsCancellationRequested)
                 {
                     stopFile = Path.Combine(EngineHost.AppDataDir, "photorec.stop");
@@ -524,6 +684,7 @@ namespace SpindleRecovery.UI
             if (!stopped) progress.Value = 1;
             var parts = new List<string>();
             if (quickTargets.Count > 0) parts.Add($"Quick Scan: {quickFound:N0} files listed");
+            if (lostTargets.Count > 0) parts.Add($"Folder rebuild: {lostFound:N0} lost files with names");
             if (deep != null) parts.Add($"Deep Scan: {all.Count(f => f.Source == FoundSource.DeepScan):N0} files reconstructed in {deep.VaultDir}");
             detailLabel.Text = string.Join("   ·   ", parts);
             if (count > 0)
@@ -605,7 +766,7 @@ namespace SpindleRecovery.UI
                 }
                 PollVault();
             }
-            if (viewDirty) { viewDirty = false; UpdateTiles(); RebuildView(); }
+            if (viewDirty) { viewDirty = false; UpdateTiles(); RebuildTree(); RebuildView(); }
         }
 
         void PollVault()
@@ -649,6 +810,12 @@ namespace SpindleRecovery.UI
                 case 1: q = q.Where(f => f.Deleted || f.Source == FoundSource.DeepScan); break;
                 case 2: q = q.Where(f => f.Source == FoundSource.QuickScan && !f.Deleted); break;
                 case 3: q = q.Where(f => f.Source == FoundSource.DeepScan); break;
+                case 4: q = q.Where(f => f.Source == FoundSource.LostRecords); break;
+            }
+            if (folderFilter != null)
+            {
+                var prefix = folderFilter;
+                q = q.Where(f => KeyOf(TreePath(f)).StartsWith(prefix, StringComparison.Ordinal));
             }
             var term = search.Text.Trim();
             if (term.Length > 0) q = q.Where(f => f.Name.IndexOf(term, StringComparison.OrdinalIgnoreCase) >= 0);
@@ -729,7 +896,7 @@ namespace SpindleRecovery.UI
                 "Status:  " + f.StatusText,
             };
             if (f.Modified.HasValue) lines.Add("Modified:  " + f.Modified.Value.ToString("g"));
-            if (f.Source == FoundSource.QuickScan)
+            if (f.Source != FoundSource.DeepScan)
             {
                 lines.Add("Original folder:  " + f.Folder);
                 lines.Add("");
@@ -874,7 +1041,7 @@ namespace SpindleRecovery.UI
                     }
                     catch { failed++; }
                 }
-                foreach (var grp in chosen.Where(f => f.Source == FoundSource.QuickScan).GroupBy(f => f.Partition))
+                foreach (var grp in chosen.Where(f => f.Source != FoundSource.DeepScan).GroupBy(f => f.Partition))
                 {
                     if (!wasBusy) { phaseLabel.Text = $"Recovering files from {grp.Key.DisplayName}"; progress.Indeterminate = true; }
                     var sub = Path.Combine(dest, SafeName(grp.Key.DisplayName));

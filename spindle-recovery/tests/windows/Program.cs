@@ -42,6 +42,7 @@ static class WinTests
         string Arg(string name) { int i = Array.IndexOf(args, name); return i >= 0 && i + 1 < args.Length ? args[i + 1] : null; }
         int fatDisk = int.Parse(Arg("--fat-disk"));
         int ntfsDisk = int.Parse(Arg("--ntfs-disk"));
+        int fmtDisk = Arg("--fmt-disk") != null ? int.Parse(Arg("--fmt-disk")) : -1;
         var expected = File.ReadAllLines(Arg("--expected")).Where(l => l.Contains("|")).Select(l =>
         {
             var p = l.Split('|');
@@ -50,7 +51,7 @@ static class WinTests
         var outDir = Arg("--out");
         Directory.CreateDirectory(outDir);
 
-        try { Run(fatDisk, ntfsDisk, expected, outDir); }
+        try { Run(fatDisk, ntfsDisk, expected, outDir); if (fmtDisk >= 0) RunFormatted(fmtDisk, expected, outDir); }
         catch (Exception ex) { Check(false, "unexpected exception: " + ex); }
         try
         {
@@ -72,6 +73,40 @@ static class WinTests
         var summary = Environment.GetEnvironmentVariable("GITHUB_STEP_SUMMARY");
         if (!string.IsNullOrEmpty(summary)) File.AppendAllLines(summary, report);
         return fail == 0 ? 0 : 1;
+    }
+
+    /// <summary>A volume quick-formatted by Windows: rebuild the old folders from leftover MFT records.</summary>
+    static void RunFormatted(int diskNo, List<Expected> expected, string outDir)
+    {
+        Section("Folder rebuild after a Windows quick format (Format-Volume)");
+        var disks = RecoveryService.ListDevicesAsync(CancellationToken.None).Result;
+        var disk = disks.FirstOrDefault(d => d.Path.Equals(@"\\.\PhysicalDrive" + diskNo, StringComparison.OrdinalIgnoreCase));
+        var part = disk?.Partitions.FirstOrDefault(p => p.IsNtfs);
+        if (!Check(part != null, "formatted NTFS partition found")) return;
+        var quick = RecoveryService.QuickScanAsync(part, CancellationToken.None).Result;
+        Check(quick.Count(f => !f.Deleted) == 0, $"the formatted volume looks empty to the file system ({quick.Count} entries)");
+        var started = DateTime.UtcNow;
+        var lost = RecoveryService.NtfsLostRecordsAsync(part, CancellationToken.None).Result;
+        var mine = expected.Where(e => e.Fs == "fmt").ToList();
+        var matched = mine.Select(e => new { e, f = lost.FirstOrDefault(x => string.Equals(x.FullPath, e.Path, StringComparison.OrdinalIgnoreCase)) })
+                          .Where(x => x.f != null).ToList();
+        Check(matched.Count > 0, $"{matched.Count} of {mine.Count} files found again with their full original paths " +
+                                 $"({lost.Count} lost records, {(DateTime.UtcNow - started).TotalSeconds:0.0} s)");
+        var dest = Path.Combine(outDir, "formatted");
+        var res = RecoveryService.RecoverQuickFilesAsync(part, matched.Select(x => x.f), dest, CancellationToken.None).Result;
+        int exact = matched.Count(x =>
+        {
+            var p = Path.Combine(dest, x.e.Path.TrimStart('/').Replace('/', '\\'));
+            return File.Exists(p) && Md5(p) == x.e.Md5;
+        });
+        int good = matched.Count(x => x.f.Chance == RecoveryChance.Good);
+        Check(exact == matched.Count(x => x.f.Chance == RecoveryChance.Good) || exact >= good,
+              $"{exact} of {matched.Count} recovered byte-for-byte ({good} rated 'good')");
+        Check(matched.Where(x => x.f.Chance == RecoveryChance.Good).All(x =>
+              {
+                  var p = Path.Combine(dest, x.e.Path.TrimStart('/').Replace('/', '\\'));
+                  return File.Exists(p) && Md5(p) == x.e.Md5;
+              }), "every file rated 'good' is recovered byte-for-byte");
     }
 
     static void Run(int fatDiskNo, int ntfsDiskNo, List<Expected> expected, string outDir)

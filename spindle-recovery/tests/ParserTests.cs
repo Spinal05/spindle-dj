@@ -148,6 +148,7 @@ static class ParserTests
         Check(EngineHost.JoinArgs(new[] { @"C:\dir with space\" }) == @"""C:\dir with space\\""", "trailing backslash doubled inside quotes");
 
         NtfsTests();
+        FormattedNtfsTests();
         ScanStoreTests();
 
         Console.WriteLine();
@@ -204,6 +205,84 @@ static class ParserTests
             }
         }
         finally { File.Delete(img); }
+    }
+
+    static string ExtractFixture(string gz)
+    {
+        var img = Path.Combine(Path.GetTempPath(), "spindle-" + Guid.NewGuid().ToString("N") + ".img");
+        using (var g = new GZipStream(File.OpenRead(Path.Combine(Fixtures, gz)), CompressionMode.Decompress))
+        using (var o = File.Create(img)) g.CopyTo(o);
+        return img;
+    }
+
+    // ntfs-formatted.img: an NTFS volume with two folders of files that was then quick-formatted
+    // (mkntfs -Q), so the current file system is empty but the old MFT records are still on disk.
+    static void FormattedNtfsTests()
+    {
+        Console.WriteLine("Folder rebuild after a quick format (old MFT records)");
+        var expected = new Dictionary<string, string>
+        {
+            ["/Photos/Wedding 2024/IMG_0000.jpg"] = "a5fcf6debbdcc01aaa4dc9dfb5c8ae5a",
+            ["/Photos/Wedding 2024/IMG_0001.jpg"] = "d1257603c6ddfe4d025ffbd1704c1997",
+            ["/Photos/Wedding 2024/IMG_0002.jpg"] = "127228f69f29a44df329110a44420774",
+            ["/Photos/Wedding 2024/IMG_0003.jpg"] = "729c2563079562376d6e75b69f7116cf",
+            ["/Photos/Wedding 2024/IMG_0004.jpg"] = "33524888fb81b58c89ed064d36d48934",
+            ["/Photos/Wedding 2024/IMG_0005.jpg"] = "7a9de0c88391d4fa1791f1ffa40f196f",
+            ["/Work/Reports/Q1 report.txt"] = "21a7bcccf0205e7f7555f3f714d8e3b5",
+            ["/Work/Reports/Q2 report.txt"] = "1e6d5ed61979ec068b9fa863984b38a6",
+            ["/Work/Reports/Q3 report.txt"] = "61fb16dee9dd6e610be2a278cdea39a1",
+        };
+        var img = ExtractFixture("ntfs-formatted.img.gz");
+        var home = Path.Combine(Path.GetTempPath(), "spindle-fmt-" + Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("XDG_DATA_HOME", home);
+        try
+        {
+            long len = new FileInfo(img).Length;
+            using (var dev = new SectorReader(img))
+            {
+                var vol = NtfsVolume.Open(dev, 0, len);
+                Check(vol.Scan(null, CancellationToken.None).Count == 0, "the current (new) file system is empty");
+            }
+            var disk = new DiskInfo { Path = img, Title = "formatted.img", Kind = DeviceKind.Image, SectorSize = 512 };
+            var part = new PartitionInfo { Disk = disk, Number = 0, Status = 'P', Type = "NTFS", FileSystemInfo = "NTFS", SizeSectors = len / 512 };
+            disk.Partitions.Add(part);
+            var lost = RecoveryService.NtfsLostRecordsAsync(part, CancellationToken.None).Result;
+            Check(expected.Keys.All(k => lost.Any(f => f.FullPath == k)), $"all {expected.Count} files found with their original folders ({lost.Count} lost records)");
+            Check(lost.All(f => f.Source == FoundSource.LostRecords && f.Deleted && f.StatusText.StartsWith("Lost")), "marked as lost after format");
+            var dest = Path.Combine(home, "out");
+            var res = RecoveryService.RecoverQuickFilesAsync(part, lost.Where(f => expected.ContainsKey(f.FullPath)), dest, CancellationToken.None).Result;
+            Check(res.Ok == expected.Count && res.Failed == 0, $"recovered {res.Ok}/{expected.Count}");
+            Check(expected.All(kv => File.Exists(Path.Combine(dest, kv.Key.TrimStart('/'))) &&
+                                     Md5(File.ReadAllBytes(Path.Combine(dest, kv.Key.TrimStart('/')))) == kv.Value),
+                  "byte-for-byte, in their original folders");
+
+            // the primary boot sector is destroyed: the backup copy at the end of the volume is used
+            using (var fs = new FileStream(img, FileMode.Open, FileAccess.Write)) fs.Write(new byte[4096], 0, 4096);
+            using (var dev = new SectorReader(img))
+            {
+                var vol = NtfsVolume.Open(dev, 0, len);
+                Check(vol.UsedBackupBootSector, "damaged boot sector: the backup boot sector is used");
+            }
+            // and the volume is RAW (backup boot sector gone too): default geometry still finds the files
+            using (var fs = new FileStream(img, FileMode.Open, FileAccess.Write)) { fs.Position = len - 1024; fs.Write(new byte[1024], 0, 1024); }
+            var raw = RecoveryService.NtfsLostRecordsAsync(part, CancellationToken.None).Result;
+            Check(expected.Keys.All(k => raw.Any(f => f.FullPath == k)), "RAW volume (both boot sectors gone): files and folders still rebuilt");
+            using (var dev = new SectorReader(img))
+            {
+                var vol = NtfsVolume.OpenOrAssume(dev, 0, len);
+                vol.CarveRecords(len, null, CancellationToken.None);
+                Check(vol.ClusterSize == 1024 && !vol.GeometryAssumed, "RAW volume: 1 KiB cluster size worked out from the $MFT record (got " + vol.ClusterSize + ")");
+            }
+            var dest2 = Path.Combine(home, "raw");
+            var res2 = RecoveryService.RecoverQuickFilesAsync(part, raw.Where(f => expected.ContainsKey(f.FullPath)), dest2, CancellationToken.None).Result;
+            Check(res2.Ok == expected.Count && expected.All(kv => Md5(File.ReadAllBytes(Path.Combine(dest2, kv.Key.TrimStart('/')))) == kv.Value),
+                  "RAW volume: contents recovered byte-for-byte");
+        }
+        finally
+        {
+            File.Delete(img);
+            try { Directory.Delete(home, true); } catch { }
+        }
     }
 
     static void ScanStoreTests()

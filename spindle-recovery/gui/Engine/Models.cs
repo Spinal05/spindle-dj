@@ -75,7 +75,8 @@ namespace SpindleRecovery.Engine
         }
     }
 
-    public enum FoundSource { QuickScan, DeepScan }
+    // Stored in saved scans: append new values at the end.
+    public enum FoundSource { QuickScan, DeepScan, LostRecords }
 
     // Values are stored in saved scans: append new categories at the end, never reorder.
     // FileTypes.DisplayOrder controls the order shown in the UI.
@@ -120,7 +121,8 @@ namespace SpindleRecovery.Engine
                 if (Source == FoundSource.DeepScan) return "Reconstructed";
                 if (!Deleted) return "Existing";
                 var c = ChanceText;
-                return c == null ? "Deleted" : "Deleted · " + c;
+                var what = Source == FoundSource.LostRecords ? "Lost" : "Deleted";
+                return c == null ? what : what + " · " + c;
             }
         }
     }

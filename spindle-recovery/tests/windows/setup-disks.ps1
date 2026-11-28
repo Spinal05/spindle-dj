@@ -48,6 +48,7 @@ function New-Data([string]$Path, [int]$Size, [int]$Seed) {
 
 $fat = New-TestVhd (Join-Path $Work 'fat.vhd') 'fat32' 'CAMERA' 'Y'
 $ntfs = New-TestVhd (Join-Path $Work 'ntfs.vhd') 'ntfs' 'DATA' 'Z'
+$fmt = New-TestVhd (Join-Path $Work 'fmt.vhd') 'ntfs' 'OLDDATA' 'W'
 
 # ---- FAT32 card: photos with long file names, a document, a note
 New-Item -ItemType Directory -Force 'Y:\DCIM\100 Holiday', 'Y:\Documents' | Out-Null
@@ -76,24 +77,44 @@ $ntfsDeleted = @('Users\Sam\Pictures\Summer 2026\beach 1.jpg', 'Users\Sam\Pictur
                  'Users\Sam\Documents\tiny.txt', 'Projects\big.bin')
 $ntfsAll = @('Users\Sam\Documents\budget.xlsx') + $ntfsDeleted
 
+# ---- NTFS disk that will be quick-formatted: 300 files in nested folders
+$fmtAll = [System.Collections.Generic.List[string]]::new()
+foreach ($user in 'Dana', 'Lee') {
+    foreach ($folder in 'Photos\Holiday', 'Photos\Birthday', 'Documents\Invoices') {
+        New-Item -ItemType Directory -Force "W:\Users\$user\$folder" | Out-Null
+        for ($i = 1; $i -le 50; $i++) {
+            $ext = if ($folder -like 'Photos*') { 'jpg' } else { 'pdf' }
+            $rel = "Users\$user\$folder\file $i.$ext"
+            New-Data "W:\$rel" (3000 + ($i * 97) % 9000) (1000 + $fmtAll.Count)
+            $fmtAll.Add($rel)
+        }
+    }
+}
+
 # ---- record checksums, then delete with Windows
 $lines = [System.Collections.Generic.List[string]]::new()
 foreach ($p in $fatAll) { $lines.Add("fat|$p|$((Get-FileHash -Algorithm MD5 "Y:\$p").Hash)|$([int]($fatDeleted -contains $p))") }
 foreach ($p in $ntfsAll) { $lines.Add("ntfs|$p|$((Get-FileHash -Algorithm MD5 "Z:\$p").Hash)|$([int]($ntfsDeleted -contains $p))") }
+foreach ($p in $fmtAll) { $lines.Add("fmt|$p|$((Get-FileHash -Algorithm MD5 "W:\$p").Hash)|1") }
 [System.IO.File]::WriteAllLines((Join-Path $Work 'expected.txt'), $lines, [System.Text.UTF8Encoding]::new($false))
 
 # Flush file data to the disks BEFORE deleting: Windows discards cached data of files that are
 # deleted before it was written, which would leave nothing on disk to recover (unlike real use,
 # where files are deleted long after they were written).
-Write-VolumeCache -DriveLetter Y, Z
+Write-VolumeCache -DriveLetter Y, Z, W
 
 $fatDeleted | ForEach-Object { Remove-Item -LiteralPath "Y:\$_" }
 Remove-Item -LiteralPath 'Z:\Users\Sam\Pictures\Summer 2026' -Recurse
 'Users\Sam\Documents\Résumé été.docx', 'Users\Sam\Documents\tiny.txt', 'Projects\big.bin' | ForEach-Object { Remove-Item -LiteralPath "Z:\$_" }
 Write-VolumeCache -DriveLetter Y, Z
 
+# Quick-format W: with Windows itself: the volume becomes empty, the old file records stay on disk
+Format-Volume -DriveLetter W -FileSystem NTFS -NewFileSystemLabel NEWDATA -Force -Confirm:$false | Out-Host
+Write-VolumeCache -DriveLetter W
+
 Get-Content (Join-Path $Work 'expected.txt') | Out-Host
 "fat=$fat" >> $env:GITHUB_OUTPUT
 "ntfs=$ntfs" >> $env:GITHUB_OUTPUT
+"fmt=$fmt" >> $env:GITHUB_OUTPUT
 "work=$Work" >> $env:GITHUB_OUTPUT
 Write-Host "FAT32 VHD is disk $fat, NTFS VHD is disk $ntfs"

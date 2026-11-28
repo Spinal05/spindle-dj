@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading;
 
@@ -70,6 +71,9 @@ namespace SpindleRecovery.Engine
         public List<DataRun> Runs;
         public bool Compressed, Encrypted;
         public RecoveryChance Chance = RecoveryChance.Unknown;
+        public bool Carved;                  // found by scanning the disk for old MFT records (e.g. after a format)
+        public long FoundAt = -1;            // absolute byte offset of a carved record
+        public int ClusterSize;              // cluster size its data runs are measured in (0 = the volume's)
         public double OverwrittenFraction;
         public string Path;
     }
@@ -96,11 +100,38 @@ namespace SpindleRecovery.Engine
         public static bool LooksLikeNtfs(byte[] boot) =>
             boot.Length >= 512 && Encoding.ASCII.GetString(boot, 3, 8) == "NTFS    " && boot[510] == 0x55 && boot[511] == 0xAA;
 
-        public static NtfsVolume Open(SectorReader dev, long partitionOffset)
+        /// <summary>
+        /// Opens an NTFS volume. If the boot sector at the start is damaged, the backup copy that NTFS
+        /// keeps in the partition's last sector is used; if the first MFT record is damaged, the MFT
+        /// mirror ($MFTMirr) is used.
+        /// </summary>
+        public static NtfsVolume Open(SectorReader dev, long partitionOffset, long partitionLength = 0)
         {
-            var boot = dev.Read(partitionOffset, 512);
-            if (!LooksLikeNtfs(boot)) throw new InvalidDataException("This partition does not contain an NTFS boot sector.");
-            var v = new NtfsVolume(dev, partitionOffset);
+            var candidates = new List<long> { partitionOffset };
+            if (partitionLength >= 1024)
+            {
+                candidates.Add(partitionOffset + partitionLength - 512);   // backup boot sector
+                candidates.Add(partitionOffset + partitionLength - 1024);  // when the partition is one sector larger than the volume
+            }
+            Exception last = null;
+            foreach (var at in candidates)
+            {
+                var boot = dev.Read(at, 512);
+                if (!LooksLikeNtfs(boot)) continue;
+                try { return FromBoot(dev, partitionOffset, boot, at != partitionOffset); }
+                catch (InvalidDataException ex) { last = ex; }
+            }
+            throw last ?? new InvalidDataException("This partition does not contain a readable NTFS boot sector (primary or backup).");
+        }
+
+        public bool UsedBackupBootSector { get; private set; }
+        /// <summary>No boot sector was readable: cluster size is assumed until the MFT's own record reveals it.</summary>
+        public bool GeometryAssumed { get; private set; }
+        public bool HasMft => mftRuns != null;
+
+        static NtfsVolume FromBoot(SectorReader dev, long partitionOffset, byte[] boot, bool fromBackup)
+        {
+            var v = new NtfsVolume(dev, partitionOffset) { UsedBackupBootSector = fromBackup };
             v.BytesPerSector = BitConverter.ToUInt16(boot, 0x0B);
             int spc = boot[0x0D];
             if (spc > 0x80) spc = 1 << (256 - spc);
@@ -108,18 +139,34 @@ namespace SpindleRecovery.Engine
             v.ClusterSize = v.BytesPerSector * spc;
             v.TotalClusters = BitConverter.ToInt64(boot, 0x28) / spc;
             long mftLcn = BitConverter.ToInt64(boot, 0x30);
+            long mirrLcn = BitConverter.ToInt64(boot, 0x38);
             int cpr = unchecked((sbyte)boot[0x40]);
             v.RecordSize = cpr > 0 ? cpr * v.ClusterSize : 1 << -cpr;
             if (v.RecordSize < 256 || v.RecordSize > 65536) throw new InvalidDataException("Invalid MFT record size.");
 
-            // Record 0 describes the MFT itself (which may be fragmented).
-            var rec0 = v.dev.Read(v.partOffset + mftLcn * v.ClusterSize, v.RecordSize);
-            if (!ApplyFixups(rec0, v.RecordSize)) throw new InvalidDataException("The MFT could not be read (damaged first record).");
-            var mftEntry = ParseRecord(rec0, 0);
-            if (mftEntry?.Runs == null || mftEntry.Runs.Count == 0) throw new InvalidDataException("The MFT has no data runs.");
-            v.mftRuns = mftEntry.Runs;
-            v.mftSize = mftEntry.Size;
-            return v;
+            // Record 0 describes the MFT itself (which may be fragmented); $MFTMirr holds a copy.
+            foreach (var lcn in new[] { mftLcn, mirrLcn })
+            {
+                var rec0 = v.dev.Read(v.partOffset + lcn * v.ClusterSize, v.RecordSize);
+                if (!ApplyFixups(rec0, v.RecordSize)) continue;
+                var mftEntry = ParseRecord(rec0, 0);
+                if (mftEntry?.Runs == null || mftEntry.Runs.Count == 0) continue;
+                v.mftRuns = mftEntry.Runs;
+                v.mftSize = mftEntry.Size;
+                return v;
+            }
+            throw new InvalidDataException("The MFT could not be read (first record and its mirror are damaged).");
+        }
+
+        /// <summary>
+        /// For scanning a damaged or formatted volume: the real geometry when a boot sector is
+        /// readable, otherwise the common defaults (4 KiB clusters, 1 KiB MFT records).
+        /// </summary>
+        public static NtfsVolume OpenOrAssume(SectorReader dev, long partitionOffset, long partitionLength)
+        {
+            try { return Open(dev, partitionOffset, partitionLength); }
+            catch (InvalidDataException) { }
+            return new NtfsVolume(dev, partitionOffset) { BytesPerSector = 512, ClusterSize = 4096, RecordSize = 1024, TotalClusters = partitionLength / 4096, GeometryAssumed = true };
         }
 
         public long RecordCount => mftSize / RecordSize;
@@ -171,10 +218,143 @@ namespace SpindleRecovery.Engine
                 // NTFS metadata files ($MFT, $LogFile, $Extend\$UsnJrnl, ...) live in the root and start with '$'.
                 if (e.Path.StartsWith("/$")) continue;
                 Rate(e);
+                e.ClusterSize = ClusterSize;
                 result.Add(e);
             }
             result.Sort((a, b) => string.CompareOrdinal(a.Path, b.Path));
             return result;
+        }
+
+        /// <summary>
+        /// Searches the whole partition for MFT records that are not part of the current MFT, such as
+        /// the old file table left behind by a quick format, or MFT fragments of a damaged volume.
+        /// Rebuilds their folder paths from the parent references they contain.
+        /// </summary>
+        public List<NtfsEntry> CarveRecords(long partitionLength, Action<double> progress, CancellationToken token)
+        {
+            // byte ranges of the live MFT (already covered by Scan), relative to the partition start
+            var live = new List<KeyValuePair<long, long>>();
+            if (mftRuns != null)
+            {
+                long remaining = mftSize;
+                foreach (var r in mftRuns)
+                {
+                    if (r.Lcn < 0 || remaining <= 0) continue;
+                    long len = Math.Min(r.Length * (long)ClusterSize, remaining);
+                    live.Add(new KeyValuePair<long, long>(r.Lcn * (long)ClusterSize, r.Lcn * (long)ClusterSize + len));
+                    remaining -= len;
+                }
+            }
+            Func<long, bool> IsLive = rel => live.Any(kv => rel >= kv.Key && rel < kv.Value);
+
+            var found = new List<NtfsEntry>();
+            var extensions = new List<KeyValuePair<long, NtfsEntry>>();
+            var seen = new HashSet<string>();
+            const int chunk = 4 << 20;
+            for (long pos = 0; pos < partitionLength; pos += chunk)
+            {
+                token.ThrowIfCancellationRequested();
+                int n = (int)Math.Min(chunk + 4096, partitionLength - pos); // overlap so records crossing the boundary are seen
+                var buf = dev.Read(partOffset + pos, n);
+                int limit = (int)Math.Min(chunk, partitionLength - pos);
+                for (int o = 0; o < limit; o += 512)
+                {
+                    if (buf[o] != (byte)'F' || buf[o + 1] != (byte)'I' || buf[o + 2] != (byte)'L' || buf[o + 3] != (byte)'E') continue;
+                    if (o + 0x30 > buf.Length) continue;
+                    int size = (int)BitConverter.ToUInt32(buf, o + 0x1C); // bytes allocated for this record
+                    if (size != 1024 && size != 4096 && size != 2048) size = RecordSize;
+                    if (o + size > buf.Length || IsLive(pos + o)) continue;
+                    var rec = new byte[size];
+                    Buffer.BlockCopy(buf, o, rec, 0, size);
+                    if (!ApplyFixups(rec, size)) continue;
+                    int usaOff = BitConverter.ToUInt16(rec, 4);
+                    long index = usaOff >= 0x30 ? (long)BitConverter.ToUInt32(rec, 0x2C) : -1L;
+                    var e = ParseRecord(rec, index);
+                    if (e == null) continue;
+                    e.Carved = true;
+                    e.FoundAt = partOffset + pos + o;
+                    long baseRef = BitConverter.ToInt64(rec, 0x20) & 0xFFFFFFFFFFFFL;
+                    if (baseRef != 0) { extensions.Add(new KeyValuePair<long, NtfsEntry>(baseRef, e)); continue; }
+                    if (e.Name == null) continue;
+                    if (!seen.Add(index + "|" + e.Sequence + "|" + e.ParentIndex + "|" + e.Name)) continue; // same record seen twice (e.g. MFT mirror)
+                    found.Add(e);
+                }
+                progress?.Invoke(Math.Min(1.0, (double)(pos + chunk) / partitionLength));
+            }
+            foreach (var kv in extensions)
+            {
+                var b = found.FirstOrDefault(f => f.Index == kv.Key);
+                if (b == null || kv.Value.Runs == null) continue;
+                if (b.Runs == null) b.Runs = new List<DataRun>();
+                b.Runs.AddRange(kv.Value.Runs);
+                b.Runs.Sort((x, y) => x.Vcn.CompareTo(y.Vcn));
+            }
+
+            if (GeometryAssumed) InferClusterSize(found);
+            var byIndex = found.Where(f => f.Index >= 0).GroupBy(f => f.Index).ToDictionary(g => g.Key, g => g.ToList());
+            LoadBitmap();
+            var result = new List<NtfsEntry>();
+            foreach (var e in found)
+            {
+                if (e.IsDirectory || e.Index >= 0 && e.Index < 24) continue;
+                e.Path = BuildCarvedPath(e, byIndex);
+                if (e.Path.StartsWith("/$")) continue;
+                e.InUse = false; // not part of the current file system
+                Rate(e);
+                e.ClusterSize = ClusterSize;
+                result.Add(e);
+            }
+            result.Sort((a, b) => string.CompareOrdinal(a.Path, b.Path));
+            return result;
+        }
+
+        /// <summary>
+        /// Without a boot sector the cluster size is unknown. The MFT's own record ($MFT, record 0)
+        /// lists the cluster where the MFT starts, and we know the byte offset where we found it,
+        /// so offset / cluster number = cluster size.
+        /// </summary>
+        void InferClusterSize(List<NtfsEntry> found)
+        {
+            foreach (var e in found.Where(f => f.Index == 0 && f.Name == "$MFT" && f.FoundAt >= 0 && f.Runs != null && f.Runs.Count > 0 && f.Runs[0].Lcn > 0))
+            {
+                long rel = e.FoundAt - partOffset, lcn = e.Runs[0].Lcn;
+                if (rel <= 0 || rel % lcn != 0) continue;
+                long cs = rel / lcn;
+                if (cs >= 512 && cs <= 65536 && (cs & (cs - 1)) == 0)
+                {
+                    ClusterSize = (int)cs;
+                    GeometryAssumed = false;
+                    return;
+                }
+            }
+        }
+
+        static string BuildCarvedPath(NtfsEntry e, Dictionary<long, List<NtfsEntry>> byIndex)
+        {
+            var parts = new List<string> { e.Name };
+            var cur = e;
+            var visited = new HashSet<long>();
+            for (int depth = 0; depth < 256; depth++)
+            {
+                if (cur.ParentIndex == 5) break; // root directory
+                NtfsEntry parent = null;
+                if (byIndex.TryGetValue(cur.ParentIndex, out var cands))
+                {
+                    // a deleted folder's sequence number is one higher than the one its files refer to
+                    parent = cands.FirstOrDefault(c => c.IsDirectory && c.Sequence == cur.ParentSequence)
+                          ?? cands.FirstOrDefault(c => c.IsDirectory && c.Sequence == cur.ParentSequence + 1);
+                }
+                if (parent == null || !visited.Add(parent.Index))
+                {
+                    parts.Add("Folder #" + cur.ParentIndex);
+                    parts.Add(OrphanFolder);
+                    break;
+                }
+                parts.Add(parent.Name);
+                cur = parent;
+            }
+            parts.Reverse();
+            return "/" + string.Join("/", parts);
         }
 
         byte[] ReadMft(long offset, int count)
@@ -360,7 +540,7 @@ namespace SpindleRecovery.Engine
 
         void LoadBitmap()
         {
-            if (bitmap != null) return;
+            if (bitmap != null || mftRuns == null) return;
             try
             {
                 var rec = ReadMft(6L * RecordSize, RecordSize);
@@ -401,7 +581,7 @@ namespace SpindleRecovery.Engine
         {
             if (size > int.MaxValue) throw new IOException("File too large to read into memory.");
             var ms = new MemoryStream((int)size);
-            CopyRuns(runs, size, initialized, ms, token);
+            CopyRuns(runs, size, initialized, ms, token, ClusterSize);
             return ms.ToArray();
         }
 
@@ -410,32 +590,33 @@ namespace SpindleRecovery.Engine
         {
             if (e.Compressed || e.Encrypted) throw new NotSupportedException("NTFS-compressed or EFS-encrypted files cannot be recovered by Quick Scan; use Deep Scan.");
             if (e.ResidentData != null) { output.Write(e.ResidentData, 0, (int)Math.Min(e.ResidentData.Length, e.Size)); return; }
-            CopyRuns(e.Runs ?? new List<DataRun>(), e.Size, e.InitializedSize > 0 ? e.InitializedSize : e.Size, output, token);
+            CopyRuns(e.Runs ?? new List<DataRun>(), e.Size, e.InitializedSize > 0 ? e.InitializedSize : e.Size, output, token,
+                     e.ClusterSize > 0 ? e.ClusterSize : ClusterSize);
         }
 
         /// <summary>Reads at most <paramref name="max"/> bytes of a file (for previews).</summary>
         public byte[] ReadHead(NtfsEntry e, int max)
         {
             var ms = new MemoryStream();
-            var limited = new NtfsEntry { ResidentData = e.ResidentData, Runs = e.Runs, Size = Math.Min(e.Size, max), InitializedSize = Math.Min(e.InitializedSize > 0 ? e.InitializedSize : e.Size, max) };
+            var limited = new NtfsEntry { ResidentData = e.ResidentData, Runs = e.Runs, ClusterSize = e.ClusterSize, Size = Math.Min(e.Size, max), InitializedSize = Math.Min(e.InitializedSize > 0 ? e.InitializedSize : e.Size, max) };
             CopyTo(limited, ms, CancellationToken.None);
             return ms.ToArray();
         }
 
-        void CopyRuns(List<DataRun> runs, long size, long initialized, Stream output, CancellationToken token)
+        void CopyRuns(List<DataRun> runs, long size, long initialized, Stream output, CancellationToken token, int clusterSize)
         {
             long written = 0;
-            var zero = new byte[ClusterSize * 64];
+            var zero = new byte[clusterSize * 64];
             foreach (var r in runs)
             {
                 for (long c = 0; c < r.Length && written < size; )
                 {
                     token.ThrowIfCancellationRequested();
                     long clusters = Math.Min(r.Length - c, 256); // 1 MiB with 4 KiB clusters
-                    int bytes = (int)Math.Min(clusters * ClusterSize, size - written);
+                    int bytes = (int)Math.Min(clusters * clusterSize, size - written);
                     byte[] data;
                     if (r.Lcn < 0 || written >= initialized) data = bytes <= zero.Length ? zero : new byte[bytes];
-                    else data = dev.Read(partOffset + (r.Lcn + c) * ClusterSize, bytes);
+                    else data = dev.Read(partOffset + (r.Lcn + c) * clusterSize, bytes);
                     if (written < initialized && written + bytes > initialized && r.Lcn >= 0)
                         Array.Clear(data, (int)(initialized - written), (int)(written + bytes - initialized));
                     output.Write(data, 0, bytes);

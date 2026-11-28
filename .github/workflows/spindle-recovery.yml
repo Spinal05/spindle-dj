@@ -71,7 +71,7 @@ jobs:
       - name: Recovery tests against \\.\PhysicalDriveN
         shell: pwsh
         run: |
-          & ./wintests/out/wintests/WinTests.exe --fat-disk ${{ steps.disks.outputs.fat }} --ntfs-disk ${{ steps.disks.outputs.ntfs }} `
+          & ./wintests/out/wintests/WinTests.exe --fat-disk ${{ steps.disks.outputs.fat }} --ntfs-disk ${{ steps.disks.outputs.ntfs }} --fmt-disk ${{ steps.disks.outputs.fmt }} `
             --expected "${{ steps.disks.outputs.work }}/expected.txt" --out "${{ runner.temp }}/recovered"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: GUI starts and shows its main window

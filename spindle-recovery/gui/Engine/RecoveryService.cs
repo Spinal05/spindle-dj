@@ -111,7 +111,7 @@ namespace SpindleRecovery.Engine
             {
                 using (var dev = new SectorReader(part.Disk.Path, part.Disk.SectorSize))
                 {
-                    var vol = NtfsVolume.Open(dev, PartitionOffset(part));
+                    var vol = NtfsVolume.Open(dev, PartitionOffset(part), part.SizeBytes);
                     var entries = vol.Scan(progress, token);
                     var files = new List<FoundFile>(entries.Count);
                     foreach (var e in entries)
@@ -138,11 +138,48 @@ namespace SpindleRecovery.Engine
             }, token);
         }
 
+        /// <summary>
+        /// Rebuilds files and folders from old NTFS file records found anywhere on the partition:
+        /// the file table left behind by a format, or MFT pieces of a damaged (RAW) volume.
+        /// Read-only. Takes about as long as reading the whole partition once.
+        /// </summary>
+        public static Task<List<FoundFile>> NtfsLostRecordsAsync(PartitionInfo part, CancellationToken token, Action<double> progress = null)
+        {
+            return Task.Run(() =>
+            {
+                using (var dev = new SectorReader(part.Disk.Path, part.Disk.SectorSize))
+                {
+                    var vol = NtfsVolume.OpenOrAssume(dev, PartitionOffset(part), part.SizeBytes);
+                    var entries = vol.CarveRecords(part.SizeBytes, progress, token);
+                    return entries.Select(e =>
+                    {
+                        var slash = e.Path.LastIndexOf('/');
+                        return new FoundFile
+                        {
+                            Name = e.Name,
+                            Folder = slash > 0 ? e.Path.Substring(0, slash) : "/",
+                            FullPath = e.Path,
+                            Size = e.Size,
+                            Modified = e.Modified,
+                            Deleted = true,
+                            Source = FoundSource.LostRecords,
+                            Category = FileTypes.Categorize(e.Name),
+                            Extension = Path.GetExtension(e.Name).TrimStart('.').ToLowerInvariant(),
+                            Partition = part,
+                            Chance = e.Chance,
+                            Ntfs = e,
+                        };
+                    }).ToList();
+                }
+            }, token);
+        }
+
         /// <summary>Copies the selected quick-scan files (original names and folders) to <paramref name="destination"/>.</summary>
         public static async Task<RecoverResult> RecoverQuickFilesAsync(PartitionInfo part, IEnumerable<FoundFile> files, string destination, CancellationToken token)
         {
             Directory.CreateDirectory(destination);
-            if (part.IsNtfs) return await Task.Run(() => RecoverNtfs(part, files.ToList(), destination, token), token);
+            var list = files.ToList();
+            if (part.IsNtfs || list.Any(f => f.Ntfs != null)) return await Task.Run(() => RecoverNtfs(part, list, destination, token), token);
             var dir = EngineHost.NewSessionDir("undelete");
             var listFile = Path.Combine(dir, "selection.txt");
             File.WriteAllText(listFile, string.Join("\n", files.Select(f => f.FullPath)) + "\n", new UTF8Encoding(false));
@@ -170,7 +207,7 @@ namespace SpindleRecovery.Engine
             int ok = 0, failed = 0;
             using (var dev = new SectorReader(part.Disk.Path, part.Disk.SectorSize))
             {
-                var vol = NtfsVolume.Open(dev, PartitionOffset(part));
+                var vol = NtfsVolume.OpenOrAssume(dev, PartitionOffset(part), part.SizeBytes);
                 foreach (var f in files)
                 {
                     token.ThrowIfCancellationRequested();
@@ -209,7 +246,7 @@ namespace SpindleRecovery.Engine
                 }
                 if (f.Ntfs != null)
                     using (var dev = new SectorReader(f.Partition.Disk.Path, f.Partition.Disk.SectorSize))
-                        return NtfsVolume.Open(dev, PartitionOffset(f.Partition)).ReadHead(f.Ntfs, max);
+                        return NtfsVolume.OpenOrAssume(dev, PartitionOffset(f.Partition), f.Partition.SizeBytes).ReadHead(f.Ntfs, max);
                 return null; // FAT quick-scan files are previewed after recovery
             });
         }

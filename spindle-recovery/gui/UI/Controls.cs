@@ -225,13 +225,14 @@ namespace SpindleRecovery.UI
                 g.FillPath(Brushes.White, path);
                 using (var p = new Pen(hover || Selected ? color : Theme.Border, hover || Selected ? 1.6f : 1f)) g.DrawPath(p, path);
             }
-            float ic = Theme.S(40f);
-            var ir = new RectangleF(Theme.S(14), (Height - ic) / 2, ic, ic);
+            bool compact = Width < Theme.S(150);
+            float ic = Theme.S(compact ? 28f : 40f);
+            var ir = new RectangleF(Theme.S(compact ? 10 : 14), (Height - ic) / 2, ic, ic);
             using (var path = Theme.RoundRect(ir, Theme.S(10f)))
             using (var b = new SolidBrush(Color.FromArgb(30, color))) g.FillPath(b, path);
-            ir.Inflate(-Theme.S(9f), -Theme.S(9f));
+            ir.Inflate(-Theme.S(compact ? 6f : 9f), -Theme.S(compact ? 6f : 9f));
             Icons.Draw(g, Icons.ForCategory(Category), ir, color);
-            float tx = Theme.S(66);
+            float tx = Theme.S(compact ? 46 : 66);
             float maxW = Width - tx - Theme.S(8);
             using (var b = new SolidBrush(Theme.Text))
                 g.DrawString(DeviceList.Ellipsis(g, FileTypes.DisplayName(Category), Theme.BodyBold, maxW), Theme.BodyBold, b, tx, Height / 2f - Theme.S(20));

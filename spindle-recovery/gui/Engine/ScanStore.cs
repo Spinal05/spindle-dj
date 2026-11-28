@@ -30,6 +30,7 @@ namespace SpindleRecovery.Engine
             // NTFS record data needed to recover the file later
             [DataMember] public long[] Runs; [DataMember] public string Resident; [DataMember] public long InitSize;
             [DataMember] public bool Compressed; [DataMember] public bool Encrypted; [DataMember] public double Overwritten;
+            [DataMember] public int ClusterSize;
         }
 
         [DataContract] public class SavedScan
@@ -98,6 +99,7 @@ namespace SpindleRecovery.Engine
                     d.Runs = e.Runs != null ? e.Runs.SelectMany(r => new[] { r.Vcn, r.Lcn, r.Length }).ToArray() : new long[0];
                     if (e.ResidentData != null) d.Resident = Convert.ToBase64String(e.ResidentData);
                     d.InitSize = e.InitializedSize; d.Compressed = e.Compressed; d.Encrypted = e.Encrypted; d.Overwritten = e.OverwrittenFraction;
+                    d.ClusterSize = e.ClusterSize;
                 }
                 s.Files.Add(d);
             }
@@ -174,6 +176,7 @@ namespace SpindleRecovery.Engine
                     {
                         Name = d.Name, Path = d.Path, Size = d.Size, InitializedSize = d.InitSize, InUse = !d.Deleted,
                         Compressed = d.Compressed, Encrypted = d.Encrypted, OverwrittenFraction = d.Overwritten, Chance = f.Chance,
+                        ClusterSize = d.ClusterSize,
                         ResidentData = d.Resident != null ? Convert.FromBase64String(d.Resident) : null,
                     };
                     if (d.Runs != null)
