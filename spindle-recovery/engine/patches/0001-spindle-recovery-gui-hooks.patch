@@ -1,0 +1,176 @@
+diff --git a/src/dir.c b/src/dir.c
+index ea867beceb32..c3ace5eadda6 100644
+--- a/src/dir.c
++++ b/src/dir.c
+@@ -353,6 +353,69 @@ int dir_whole_partition_log(disk_t *disk, const partition_t *partition, dir_data
+   return dir_whole_partition_log_aux(disk, partition, dir_data, inode);
+ }
+ 
++/* Spindle Recovery: optional selection list for "filecopy".
++ * When the environment variable TESTDISK_COPY_LIST names a text file
++ * (one absolute path per line, as printed by "list,recursive,fullpathname"),
++ * only the regular files listed there are copied. */
++static char **copy_selection_list=NULL;
++static unsigned int copy_selection_nbr=0;
++static int copy_selection_loaded=0;
++
++static int copy_selection_cmp(const void *a, const void *b)
++{
++  return strcmp(*(char * const *)a, *(char * const *)b);
++}
++
++static void copy_selection_load(void)
++{
++  const char *list_name;
++  FILE *f;
++  char line[4096];
++  unsigned int alloc=0;
++  if(copy_selection_loaded)
++    return;
++  copy_selection_loaded=1;
++  list_name=getenv("TESTDISK_COPY_LIST");
++  if(list_name==NULL || list_name[0]=='\0')
++    return;
++  f=fopen(list_name, "rb");
++  if(f==NULL)
++  {
++    log_error("Unable to open selection list %s\n", list_name);
++    copy_selection_nbr=0;
++    copy_selection_list=(char **)MALLOC(sizeof(char *));
++    return;
++  }
++  copy_selection_list=(char **)MALLOC(sizeof(char *));
++  alloc=1;
++  while(fgets(line, sizeof(line), f)!=NULL)
++  {
++    size_t len=strlen(line);
++    while(len>0 && (line[len-1]=='\n' || line[len-1]=='\r'))
++      line[--len]='\0';
++    if(len==0)
++      continue;
++    if(copy_selection_nbr==alloc)
++    {
++      alloc*=2;
++      copy_selection_list=(char **)realloc(copy_selection_list, alloc*sizeof(char *));
++    }
++    copy_selection_list[copy_selection_nbr++]=strdup(line);
++  }
++  fclose(f);
++  qsort(copy_selection_list, copy_selection_nbr, sizeof(char *), copy_selection_cmp);
++  log_info("Selection list %s: %u entries\n", list_name, copy_selection_nbr);
++}
++
++static int copy_selection_wanted(const char *path)
++{
++  const char *key=path;
++  copy_selection_load();
++  if(copy_selection_list==NULL)
++    return 1;
++  return bsearch(&key, copy_selection_list, copy_selection_nbr, sizeof(char *), copy_selection_cmp)!=NULL;
++}
++
+ /*@
+   @ requires \valid(disk);
+   @ requires valid_disk(disk);
+@@ -395,10 +458,13 @@ static int dir_whole_partition_copy_aux(disk_t *disk, const partition_t *partiti
+       }
+       else if(LINUX_S_ISREG(current_file->st_mode)!=0)
+       {
+-	if(dir_data->copy_file(disk, partition, dir_data, current_file) == 0)
+-	  (*copy_ok)++;
+-	else
+-	  (*copy_bad)++;
++	if(copy_selection_wanted(dir_data->current_directory))
++	{
++	  if(dir_data->copy_file(disk, partition, dir_data, current_file) == 0)
++	    (*copy_ok)++;
++	  else
++	    (*copy_bad)++;
++	}
+       }
+     }
+     /* restore current_directory name */
+diff --git a/src/hdaccess.c b/src/hdaccess.c
+index 91ec79155a7a..463431fc48cf 100644
+--- a/src/hdaccess.c
++++ b/src/hdaccess.c
+@@ -1727,6 +1727,12 @@ disk_t *file_test_availability(const char *device, const int verbose, int testdi
+   int hd_h=-1;
+   int try_readonly=1;
+   int mode_basic=0;
++#if defined(__MINGW32__)
++  /* Spindle Recovery: open \\.\PhysicalDriveN and \\.\X: given on the
++   * command line with the native Win32 disk access layer. */
++  if(strncmp(device, "\\\\.\\", 4)==0)
++    return file_test_availability_win32(device, verbose, testdisk_mode);
++#endif
+ #ifdef O_BINARY
+     mode_basic|=O_BINARY;
+ #endif
+diff --git a/src/phbs.c b/src/phbs.c
+index 9364041b4bfc..b15381069972 100644
+--- a/src/phbs.c
++++ b/src/phbs.c
+@@ -215,6 +215,31 @@ pstatus_t photorec_find_blocksize(struct ph_param *params, const struct ph_optio
+ 	  }
+ 	}
+       }
++#else
++      {
++	/* Spindle Recovery: machine-readable progress for the graphical front end */
++	const time_t current_time=time(NULL);
++	if(current_time>previous_time)
++	{
++	  const char *stop_file=getenv("PHOTOREC_STOP_FILE");
++	  previous_time=current_time;
++	  printf("@@PROGRESS pass=0 sector=%llu total=%llu files=%u status=%u\n",
++	      (unsigned long long)((offset-params->partition->part_offset)/params->disk->sector_size),
++	      (unsigned long long)(params->partition->part_size/params->disk->sector_size),
++	      params->file_nbr, (unsigned int)params->status);
++	  fflush(stdout);
++	  if(stop_file!=NULL && stop_file[0]!='\0')
++	  {
++	    FILE *f_stop=fopen(stop_file, "rb");
++	    if(f_stop!=NULL)
++	    {
++	      fclose(f_stop);
++	      log_info("PhotoRec has been stopped\n");
++	      current_search_space=list_search_space;
++	    }
++	  }
++	}
++      }
+ #endif
+       if(need_to_stop!=0)
+       {
+diff --git a/src/psearchn.c b/src/psearchn.c
+index f79b1c7f3122..f5c4b71811dc 100644
+--- a/src/psearchn.c
++++ b/src/psearchn.c
+@@ -350,6 +350,26 @@ pstatus_t photorec_aux(struct ph_param *params, const struct ph_options *options
+           previous_time=current_time;
+ #ifdef HAVE_NCURSES
+           ind_stop=photorec_progressbar(stdscr, params->pass, params, offset, current_time);
++#else
++	  /* Spindle Recovery: machine-readable progress for the graphical front end */
++	  {
++	    const char *stop_file=getenv("PHOTOREC_STOP_FILE");
++	    printf("@@PROGRESS pass=%u sector=%llu total=%llu files=%u status=%u\n",
++		params->pass,
++		(unsigned long long)((offset-params->partition->part_offset)/params->disk->sector_size),
++		(unsigned long long)(params->partition->part_size/params->disk->sector_size),
++		params->file_nbr, (unsigned int)params->status);
++	    fflush(stdout);
++	    if(stop_file!=NULL && stop_file[0]!='\0')
++	    {
++	      FILE *f_stop=fopen(stop_file, "rb");
++	      if(f_stop!=NULL)
++	      {
++		fclose(f_stop);
++		ind_stop=PSTATUS_STOP;
++	      }
++	    }
++	  }
+ #endif
+ 	  params->offset=offset;
+ 	  if(need_to_stop!=0 || ind_stop!=PSTATUS_OK)

@@ -1,0 +1,72 @@
+Using locale 'C'.
+
+
+Mon Nov 23 08:20:11 2026
+Command line: TestDisk /log /cmd card.img advanced,1,list,recursive,fullpathname
+
+TestDisk 7.2, Data Recovery Utility, February 2024
+Christophe GRENIER <grenier@cgsecurity.org>
+https://www.cgsecurity.org
+OS: Linux, kernel 6.18.44-fc-v726 (#1 SMP PREEMPT_DYNAMIC @0) x86_64
+Compiler: GCC 13.3
+ext2fs lib: none, ntfs lib: none, reiserfs lib: none, ewf lib: none, curses lib: None
+Hard disk list
+Disk card.img - 134 MB / 128 MiB - CHS 17 255 63, sector size=512
+
+Partition table type (auto): Intel
+Disk card.img - 134 MB / 128 MiB
+Partition table type: Intel
+
+Interface Advanced
+BAD_RS LBA=2048 18446744073709551615
+heads/cylinder 8 (FAT) != 255 (HD)
+sect/track 32 (FAT) != 63 (HD)
+ 1 P FAT32 LBA                0  32 33    16  81  1     260096 [CAMERA_SD]
+     FAT32, blocksize=512, 133 MB / 127 MiB
+
+ 1 P FAT32 LBA                0  32 33    16  81  1     260096 [CAMERA_SD]
+     FAT32, blocksize=512, 133 MB / 127 MiB
+FAT: cluster=2(0x2), pos=6082
+Directory /
+       3 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /DCIM
+       5 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /Documents
+       6 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /Music
+       7 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /Pictures
+FAT: cluster=3(0x3), pos=6083
+Directory /DCIM
+       3 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /DCIM/.
+       0 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /DCIM/..
+       4 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /DCIM/100CANON
+FAT: cluster=4(0x4), pos=6084
+Directory /DCIM/100CANON
+       4 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /DCIM/100CANON/.
+       3 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /DCIM/100CANON/..
+       8 -rwxr-xr-x     0      0    164586 23-Nov-2026 08:11 /DCIM/100CANON/IMG_0001.JPG
+     330 -rwxr-xr-x     0      0    164991 23-Nov-2026 08:11 /DCIM/100CANON/IMG_0002.JPG
+X    653 -rwxr-xr-x     0      0    164809 23-Nov-2026 08:11 /DCIM/100CANON/_MG_0003.JPG
+     975 -rwxr-xr-x     0      0    163541 23-Nov-2026 08:11 /DCIM/100CANON/IMG_0004.JPG
+X   1295 -rwxr-xr-x     0      0    164931 23-Nov-2026 08:11 /DCIM/100CANON/_MG_0005.JPG
+X   1618 -rwxr-xr-x     0      0    164253 23-Nov-2026 08:11 /DCIM/100CANON/_MG_0006.JPG
+    1939 -rwxr-xr-x     0      0    165037 23-Nov-2026 08:11 /DCIM/100CANON/IMG_0007.JPG
+    2262 -rwxr-xr-x     0      0    163555 23-Nov-2026 08:11 /DCIM/100CANON/IMG_0008.JPG
+FAT: cluster=5(0x5), pos=6085
+Directory /Documents
+       5 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /Documents/.
+       0 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /Documents/..
+    2582 -rwxr-xr-x     0      0     20254 23-Nov-2026 08:11 /Documents/Budget 2026.xlsx
+X   2622 -rwxr-xr-x     0      0     20254 23-Nov-2026 08:11 /Documents/Thesis draft.docx
+    2662 -rwxr-xr-x     0      0      4200 23-Nov-2026 08:11 /Documents/Notes.txt
+X   2671 -rwxr-xr-x     0      0     30059 23-Nov-2026 08:11 /Documents/Invoice-0412.pdf
+FAT: cluster=6(0x6), pos=6086
+Directory /Music
+       6 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /Music/.
+       0 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /Music/..
+    2730 -rwxr-xr-x     0      0    125110 23-Nov-2026 08:11 /Music/Track01.mp3
+FAT: cluster=7(0x7), pos=6087
+Directory /Pictures
+       7 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /Pictures/.
+       0 drwxr-xr-x     0      0         0 23-Nov-2026 08:11 /Pictures/..
+X   2975 -rwxr-xr-x     0      0      5579 23-Nov-2026 08:11 /Pictures/Sunset.png
+    2986 -rwxr-xr-x     0      0   1648222 23-Nov-2026 08:11 /Pictures/Holiday.png
+
+TestDisk exited normally.

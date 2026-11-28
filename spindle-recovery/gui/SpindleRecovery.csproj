@@ -1,0 +1,46 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <AssemblyName>SpindleRecovery</AssemblyName>
+    <RootNamespace>SpindleRecovery</RootNamespace>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Resources\app.ico</ApplicationIcon>
+    <PlatformTarget>x64</PlatformTarget>
+    <Prefer32Bit>false</Prefer32Bit>
+    <Version>1.0.0</Version>
+    <FileVersion>1.0.0.0</FileVersion>
+    <Product>Spindle Recovery</Product>
+    <Company>Spindle Recovery contributors</Company>
+    <Description>Spindle Recovery - graphical data and partition recovery built on TestDisk and PhotoRec 7.2</Description>
+    <Copyright>GPL-2.0-or-later. Recovery engines: TestDisk/PhotoRec (C) Christophe GRENIER</Copyright>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <Deterministic>true</Deterministic>
+    <DebugType>none</DebugType>
+    <!-- Allows building this Windows application from Linux/macOS -->
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <!-- Where the cross-compiled engines live (see ../engine/build-engine.sh) -->
+    <EngineDir Condition="'$(EngineDir)' == ''">$(MSBuildThisFileDirectory)..\engine\out\</EngineDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Management" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The recovery engines are embedded so the whole product is a single .exe -->
+    <EmbeddedResource Include="$(EngineDir)testdisk.exe" LogicalName="engine.testdisk.exe" />
+    <EmbeddedResource Include="$(EngineDir)photorec.exe" LogicalName="engine.photorec.exe" />
+    <EmbeddedResource Include="Resources\app.ico" LogicalName="app.ico" />
+  </ItemGroup>
+
+</Project>

@@ -120,3 +120,7 @@ Ideas, bug reports and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIB
 | 1 – 4 | 7 – 0 | Hot cues 1 – 4 |
 
 ← / → crossfader · ↓ centre · R record · / search. All remappable in Settings → Keyboard.
+
+## Also in this repository: Spindle Recovery
+
+[`spindle-recovery/`](spindle-recovery/) is a separate Windows app: a graphical data- and partition-recovery tool built on TestDisk & PhotoRec 7.2 (GPL-2.0-or-later). Download [`spindle-recovery/bin/SpindleRecovery.exe`](spindle-recovery/bin/SpindleRecovery.exe) or read [its README](spindle-recovery/README.md).

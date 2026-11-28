@@ -1,0 +1,19 @@
+Analyse Disk \\.\PhysicalDrive2 - 134 MB / 128 MiB - CHS 16 255 63
+Geometry from i386 MBR: head=255 sector=63
+Current partition structure:
+ 1 P FAT32 LBA                0   2  3    16  48 32     259968 [CAMERA]
+
+Bad sector count.
+No partition is bootable
+
+search_part()
+Disk \\.\PhysicalDrive2 - 134 MB / 128 MiB - CHS 16 255 63
+FAT: cluster=2(0x2), pos=8320
+     FAT32                    0   2  3    16  48 32     259968 [CAMERA]
+     FAT32, blocksize=1024, 133 MB / 126 MiB
+
+interface_write()
+ 1 E extended                 0   1  1    16  48 32     260033
+ 5 L FAT32                    0   2  3    16  48 32     259968 [CAMERA]
+
+TestDisk exited normally.

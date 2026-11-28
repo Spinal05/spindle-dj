@@ -1,0 +1,13 @@
+TestDisk 7.2, Data Recovery Utility, February 2024
+Christophe GRENIER <grenier@cgsecurity.org>
+https://www.cgsecurity.org
+Please wait...
+Disk vol.img - 66 MB / 63 MiB - CHS 504 8 32
+Sector size:512
+
+
+Disk vol.img - 66 MB / 63 MiB - CHS 504 8 32
+     Partition			Start        End    Size in sectors
+   P FAT32                    0   0  1   503   7 32     129024 [NO NAME]
+     FAT32, blocksize=512
+

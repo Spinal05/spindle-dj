@@ -1,0 +1,31 @@
+TestDisk 7.2, Data Recovery Utility, February 2024
+Christophe GRENIER <grenier@cgsecurity.org>
+https://www.cgsecurity.org
+Please wait...
+Disk \\.\PhysicalDrive0 - 512 GB / 476 GiB - CHS 62260 255 63
+Sector size:512
+Model: Samsung SSD 970 EVO Plus 500GB, S/N:S4EVNX0N123456, FW:2B2QEXM7
+
+Disk \\.\PhysicalDrive1 - 32 GB / 29 GiB - CHS 3880 255 63
+Sector size:512
+Model: SanDisk Ultra USB 3.0
+
+Drive E: - 32 GB / 29 GiB - CHS 3880 255 63 (RO)
+Sector size:512
+
+
+Disk \\.\PhysicalDrive0 - 512 GB / 476 GiB - CHS 62260 255 63
+     Partition			Start        End    Size in sectors
+ 1 P EFI System                  2048     206847     204800 [EFI system partition]
+ 2 P MS Data                   239616  997744639  997505024 [Windows]
+     NTFS, blocksize=4096
+ 3 P Windows Recovery Env   997744640  998699007     954368
+
+Disk \\.\PhysicalDrive1 - 32 GB / 29 GiB - CHS 3880 255 63
+     Partition			Start        End    Size in sectors
+ 1 * FAT32 LBA                0  32 33  3880  80 63   62332928 [USB DRIVE]
+     FAT32, blocksize=32768
+
+Drive E: - 32 GB / 29 GiB - CHS 3880 255 63 (RO)
+     Partition			Start        End    Size in sectors
+   P FAT32                    0   0  1  3879 254 63   62332928 [USB DRIVE]
